@@ -870,7 +870,7 @@ function spawnPlace() {
   for (let k = 0; k < 120; k++) {
     const a = rnd() * TAU, d = rr(14, 22 + places.length * 2.5), x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d;
     if (places.some(p => Math.hypot(p.x - x, p.y - y) < 13)) continue;
-    if (q(x, y) < 4) continue;
+    if (q(x, y) < 7) continue;
     addPlace(name, x, y, places.length, rnd() < 0.3);
     assignPlaces(); baseDirty = true;
     toast(`${name} opened · draw a road to its sign`);
@@ -885,7 +885,7 @@ function save() {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       v: 1, t: Date.now(), money: Math.floor(money), trips: tripsTotal, rate: incomeRate(), np: nextPlace,
       roads: roads.map(r => ({ c: r.closed ? 1 : 0, k: r.cost || 0, z: r.z ? Array.from(r.z, v => Math.round(v * 100) / 100) : null, p: r.pts.map(q_ => [Math.round(q_[0] * 100) / 100, Math.round(q_[1] * 100) / 100]) })),
-      places: places.map(p => ({ n: p.name, x: p.x, y: p.y, c: p.ci, f: p.flick ? 1 : 0 }))
+      places: places.map(p => ({ n: p.name, x: p.x, y: p.y, c: p.ci, f: p.flick ? 1 : 0, b: p.bdir }))
     }));
   } catch (e) { /* storage unavailable: the city just won't persist */ }
 }
@@ -893,7 +893,7 @@ function load() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (e) { d = null; }
   if (!d || d.v !== 1 || !Array.isArray(d.places) || !d.places.length || !Array.isArray(d.roads)) return false;
-  for (const p of d.places) addPlace(p.n, p.x, p.y, p.c, p.f);
+  for (const p of d.places) { const pl = addPlace(p.n, p.x, p.y, p.c, p.f); if (p.b != null) pl.bdir = p.b; }
   roads = d.roads.filter(r => Array.isArray(r.p) && r.p.length > 1).map(r => ({ id: ++roadId, pts: r.p, closed: !!r.c, cost: r.k || 0, z: Array.isArray(r.z) && r.z.length === r.p.length ? Float32Array.from(r.z) : null }));
   money = +d.money || 0; tripsTotal = d.trips || 0; nextPlace = d.np || 40;
   rebuildNetwork();
@@ -905,24 +905,90 @@ addEventListener('pagehide', save);
 document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
 
 // ---- drawing the game layer into the character grid
+// each destination is a small isometric building behind its parking lot
+const BDIRS = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+function placeBox(p) {
+  if (p.box) return p.box;
+  const h1 = hash(p.ci * 17 + 5, p.name.length * 31), h2 = hash(p.name.charCodeAt(0), p.ci * 7 + 1);
+  const w = 3.2 + Math.floor(h1 * 3) * 0.6, d = 2.4 + Math.floor(h2 * 3) * 0.4, floors = 2 + Math.floor(h1 * 7 % 2);
+  if (p.bdir == null) {
+    let bv = -Infinity;
+    BDIRS.forEach(([dx, dy], k) => {
+      const cx = p.x + dx * (w / 2 + 2.8), cy = p.y + dy * (d / 2 + 2.8);
+      const e = Math.min(q(cx, cy), 5) + (k === 0 ? 1.5 : 0);
+      if (e > bv) { bv = e; p.bdir = k; }
+    });
+  }
+  const [dx, dy] = BDIRS[p.bdir];
+  const cx = p.x + dx * (w / 2 + 2.8), cy = p.y + dy * (d / 2 + 2.8);
+  p.box = { x0: cx - w / 2, x1: cx + w / 2, y0: cy - d / 2, y1: cy + d / 2, cx, cy, w, d, floors };
+  return p.box;
+}
+const bKey = p => { const B = placeBox(p); return B.cx + B.cy; };
+function drawBuilding(p) {
+  const B = placeBox(p), on = p.connected, col = p.col;
+  const lvl = Math.max(ch * 2.6, 0.85 * THp), Hp = B.floors * lvl, hw = TWp / 2, hh = THp / 2;
+  const cs = [[B.x0, B.y0], [B.x1, B.y0], [B.x0, B.y1], [B.x1, B.y1]].map(([x, y]) => w2s(x, y));
+  const sx0 = Math.min(...cs.map(v => v[0])), sx1 = Math.max(...cs.map(v => v[0]));
+  const sy0 = Math.min(...cs.map(v => v[1])) - Hp, sy1 = Math.max(...cs.map(v => v[1]));
+  if (sx1 < 0 || sx0 > W || sy1 < 0 || sy0 > H) return;
+  const c0 = clamp(Math.floor(sx0 / cw), 0, cols - 1), c1 = clamp(Math.floor(sx1 / cw), 0, cols - 1);
+  const r0 = clamp(Math.floor(sy0 / ch), 0, rows - 1), r1 = clamp(Math.floor(sy1 / ch), 0, rows - 1);
+  const eu = (cw / hw) * 0.75, ev = ch * 0.55, litP = on ? 0.62 : 0.1;
+  // windows are laid out on the character grid itself: regular rows per floor, blocks of 2 cells
+  const face = (side, u, hpx, len, c, r) => {
+    const shade = side ? 0.6 : 1;
+    const edgeA = [0.9 * shade, 0.95 * shade, 1.1 * shade];
+    if (hpx > Hp - ev) return put(c, r, CH.dash, edgeA);
+    if (len - u < eu) return put(c, r, CH.bar, [1.05, 1.1, 1.25]);
+    if (u < eu) return put(c, r, CH.bar, edgeA);
+    if (hpx < ev * 0.8) return put(c, r, CH.under, edgeA);
+    const rv = Math.floor(hpx / ch), cu = Math.floor(u * hw / cw), fl = Math.floor(hpx / lvl);
+    const rowInFloor = Math.floor((hpx - fl * lvl) / ch);
+    if (rowInFloor === 1 && cu % 4 >= 1 && cu % 4 <= 2 && len - u > eu * 2.5 && u > eu * 2.5) {
+      if (fl === 0) return put(c, r, CH.eq, [col[0] * 0.5, col[1] * 0.5, col[2] * 0.5], col, on ? 1.2 : 0.12);
+      const hh_ = hash(p.ci * 97 + side * 13 + (cu >> 2) * 5, fl * 11 + 3), lit = hh_ < litP;
+      const wc = hh_ < litP * 0.25 ? [0.55, 0.75, 1] : [1, 0.78, 0.42];
+      return put(c, r, CH.hash, lit ? [0.7 * shade, 0.6 * shade, 0.4 * shade] : [0.16, 0.17, 0.22], lit ? wc : null, 0.9 * shade);
+    }
+    return put(c, r, rv % 2 ? CH.sp : (side ? CH.dot : CH.colon), [0.34 * shade, 0.36 * shade, 0.46 * shade]);
+  };
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+    const sx = (c + 0.5) * cw, sy = (r + 0.5) * ch;
+    const rw = s2w(sx, sy + Hp);
+    if (rw[0] >= B.x0 && rw[0] <= B.x1 && rw[1] >= B.y0 && rw[1] <= B.y1) {
+      const ed = Math.min(rw[0] - B.x0, B.x1 - rw[0], rw[1] - B.y0, B.y1 - rw[1]);
+      if (ed < eu * 1.1) put(c, r, CH.dash, [0.85, 0.9, 1.05]);
+      else { const hh_ = hash(Math.floor(rw[0] * 3), Math.floor(rw[1] * 3)); put(c, r, hh_ < 0.05 ? C('[') : hh_ < 0.1 ? C(']') : hh_ < 0.4 ? CH.dot : CH.sp, [0.3, 0.32, 0.4]); }
+      continue;
+    }
+    const x = (sx - cam.ox) / hw + B.y1;
+    if (x >= B.x0 && x <= B.x1) { const hpx = (x + B.y1) * hh + cam.oy - sy; if (hpx >= 0 && hpx <= Hp) { face(0, x - B.x0, hpx, B.w, c, r); continue; } }
+    const y = B.x1 - (sx - cam.ox) / hw;
+    if (y >= B.y0 && y <= B.y1) { const hpx = (B.x1 + y) * hh + cam.oy - sy; if (hpx >= 0 && hpx <= Hp) face(1, y - B.y0, hpx, B.d, c, r); }
+  }
+}
 function drawPlace(p) {
-  const [c, r] = cellOf(p.x, p.y), on = p.connected, col = p.col;
+  const [c, r] = cellOf(p.x, p.y), on = p.connected, col = p.col, B = placeBox(p);
   const fl = p.flick && on && (Math.sin(simT * 9 + p.id * 3) + Math.sin(simT * 23 + p.id)) > 1.45 ? 0.12 : 1;
-  const k = (on ? 1 : 0.3) * fl;
-  const pr = Math.max(2, Math.round(2.4 * THp / ch));
-  const txt = ' ' + p.name + ' ', w = txt.length + 2, left = c - (w >> 1), top = r - pr - 3;
-  const dimA = [col[0] * 0.25, col[1] * 0.25, col[2] * 0.25];
-  for (let j = 0; j < pr; j++) { put(left + 2, r - j, CH.bar, AL.pole); put(left + w - 3, r - j, CH.bar, AL.pole); }
+  const k = (on ? 1 : 0.35) * fl;
+  // neon sign standing on the roof
+  const rs = w2s(B.cx, B.cy), Hp = B.floors * Math.max(ch * 2.6, 0.85 * THp);
+  const sc = Math.floor(rs[0] / cw), sr = Math.floor((rs[1] - Hp) / ch);
+  const txt = ' ' + p.name + ' ', w = txt.length + 2, left = sc - (w >> 1), top = sr - 4;
+  const dimA = [col[0] * 0.3, col[1] * 0.3, col[2] * 0.3];
+  put(left + 2, top + 3, CH.bar, AL.pole); put(left + w - 3, top + 3, CH.bar, AL.pole);
   for (let j = 0; j < w; j++) {
     const edge = j === 0 || j === w - 1;
-    put(left + j, top, edge ? CH.dot : CH.dash, dimA, col, 0.9 * k);
-    put(left + j, top + 2, edge ? CH.apos : CH.dash, dimA, col, 0.9 * k);
-    put(left + j, top + 1, edge ? CH.bar : C(txt[j - 1]), dimA, col, (edge ? 1.0 : 2.2) * k);
+    put(left + j, top, edge ? CH.dot : CH.dash, dimA, col, 1.0 * k);
+    put(left + j, top + 2, edge ? CH.apos : CH.dash, dimA, col, 1.0 * k);
+    put(left + j, top + 1, edge ? CH.bar : C(txt[j - 1]), dimA, col, (edge ? 1.1 : 2.6) * k);
   }
-  poolInto(litA, p.x, p.y, 6.5, col, (on ? 1.0 : 0.25) * fl);
+  poolInto(litA, p.x, p.y, 7, col, (on ? 1.1 : 0.25) * fl);
+  poolInto(litA, B.cx, B.cy, Math.max(B.w, B.d) * 0.9, col, (on ? 0.5 : 0.1) * fl);
   refl.push([c, r, col, (on ? 0.9 : 0.25) * fl]);
   if (!on) {
-    if (Math.sin(simT * 3) > -0.3) { const msg = '[ no road ]'; for (let j = 0; j < msg.length; j++) put(c - (msg.length >> 1) + j, r + 2, C(msg[j]), [0.6, 0.65, 0.75]); }
+    if (Math.sin(simT * 3) > -0.3) { const msg = '[ no road ]'; for (let j = 0; j < msg.length; j++) put(c - (msg.length >> 1) + j, r + 1, C(msg[j]), [0.6, 0.65, 0.75]); }
   } else for (let j = 0; j < Math.min(5, Math.floor(p.demand)); j++) put(left + w + 1 + j, top + 1, CH.dot, [0.7, 0.7, 0.7], col, 0.6);
 }
 function drawText(c0, r0, text, col, k) { for (let j = 0; j < text.length; j++) put(c0 + j, r0, C(text[j]), [col[0] * 0.3, col[1] * 0.3, col[2] * 0.3], col, k); }
@@ -1477,11 +1543,15 @@ function frame(now) {
   }
   // cars (paint back-to-front so nearer cars win overlapping cells)
   cars.sort((a, b) => (a.x + a.y) - (b.x + b.y));
+  const blds = places.slice().sort((a, b) => bKey(a) - bKey(b));
+  let bi = 0;
   for (const c of cars) {
+    while (bi < blds.length && bKey(blds[bi]) < c.x + c.y) drawBuilding(blds[bi++]);
     const [sx, sy] = w2s(c.x, c.y);
     if (sx < -90 || sx > W + 90 || sy < -60 || sy > H + 120) continue;
     drawCar(c);
   }
+  while (bi < blds.length) drawBuilding(blds[bi++]);
   // road flares at incidents
   for (const inc of incidents) for (const f of inc.flares) {
     const fl = 0.7 + 0.3 * Math.sin(simT * 23 + f.ph) * Math.sin(simT * 7 + f.ph), [c, r] = cellOf(f.x, f.y);
