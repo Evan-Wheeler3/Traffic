@@ -18,6 +18,8 @@
 html, body { height: 100%; background: var(--bg); overflow: hidden; overscroll-behavior: none; }
 body { margin: 0; color: var(--ink); font-family: var(--mono); touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
 #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: var(--bg); }
+.vignette { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 45%, rgba(0,0,8,0.72) 100%); }
+.flash { position: fixed; inset: 0; pointer-events: none; background: rgb(200, 215, 255); opacity: 0; }
 .hud-top {
   position: fixed; top: 0; left: 0; right: 0; pointer-events: none;
   padding: calc(env(safe-area-inset-top, 0px) + 12px) max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
@@ -59,6 +61,8 @@ button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
 </style>
 
 <canvas id="view" aria-label="ASCII isometric road sandbox at night in the rain. Drag to draw roads; cars drive on them."></canvas>
+<div class="vignette" aria-hidden="true"></div>
+<div class="flash" id="flash" aria-hidden="true"></div>
 <div class="hud-top">
   <div class="brand"><b>RAINLINE</b></div>
   <div class="stats"><b id="money">$0</b><span id="stats">booting</span></div>
@@ -73,6 +77,7 @@ button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
     <button id="bClear" type="button">clear</button>
     <button id="bRain" type="button">rain <span class="v" id="vRain">heavy</span></button>
     <button id="bTraffic" type="button">cars <span class="v" id="vTraffic">normal</span></button>
+    <button id="bMap" type="button">map</button>
     <button id="bCrash" type="button">crash</button>
     <button id="bSound" type="button">sound <span class="v" id="vSound">off</span></button>
   </div>
@@ -111,7 +116,7 @@ const C = s => s.codePointAt(0);
 // albedo (how much light a character reflects) and light colours, linear 0..1
 const AL = {
   edge: [1.1, 1.12, 1.2], road: [0.34, 0.37, 0.46], puddle: [0.48, 0.62, 0.9], center: [1.0, 0.78, 0.3],
-  grid: [0.30, 0.34, 0.46], ground: [0.3, 0.78, 0.46], pole: [0.40, 0.42, 0.5], rain: [0.26, 0.3, 0.42], splash: [0.75, 0.8, 0.95]
+  grid: [0.30, 0.34, 0.46], ground: [0.24, 0.58, 0.36], pole: [0.40, 0.42, 0.5], rain: [0.55, 0.62, 0.86], splash: [0.75, 0.8, 0.95]
 };
 const LC = {
   sodium: [1.0, 0.52, 0.18], head: [1.0, 0.93, 0.78], tail: [1.0, 0.1, 0.05], red: [1.0, 0.12, 0.1], amber: [1.0, 0.62, 0.1],
@@ -126,7 +131,8 @@ const mk = (w = 1, h = 1) => { const c = document.createElement('canvas'); c.wid
 const glyphC = mk(), colorC = mk(), glowC = mk(), g2C = mk(), g3C = mk(), vigC = mk();
 const glyphX = glyphC.getContext('2d'), colorX = colorC.getContext('2d'), glowX = glowC.getContext('2d'), g2X = g2C.getContext('2d'), g3X = g3C.getContext('2d'), vigX = vigC.getContext('2d');
 let F = 12, DPR = 1, W = 1, H = 1, VW = 1, VH = 1, cwD = 1, chD = 1, cw = 1, ch = 1, cols = 1, rows = 1, NC = 1, TWp = 1, THp = 1;
-const cam = { ox: 0, oy: 0 };
+const cam = { ox: 0, oy: 0, tx: 0, ty: 0 };
+let zoomTW = 40, dprCap = 2;   // zoomTW: screen width of one tile (css px)
 let wx, wy, baseCh, baseAlb, baseEm, baseLit, isRoad, deckMask, chA, albA, emA, litA, prevCh, colorImg, glowImg;
 let baseDirty = true;
 
@@ -144,7 +150,7 @@ function glyph(code) {
 }
 
 function resizeAll() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  DPR = Math.min(window.devicePixelRatio || 1, dprCap);
   W = Math.max(1, innerWidth); H = Math.max(1, innerHeight);
   VW = Math.round(W * DPR); VH = Math.round(H * DPR);
   view.width = VW; view.height = VH;
@@ -159,7 +165,7 @@ function resizeCells() {
   chD = Math.max(6, Math.round(F * 1.18 * DPR));
   cw = cwD / DPR; ch = chD / DPR;
   cols = Math.ceil(VW / cwD); rows = Math.ceil(VH / chD); NC = cols * rows;
-  TWp = TILE_COLS * cw; THp = TWp / 2;
+  TWp = zoomTW; THp = TWp / 2;
   wx = new Float32Array(NC); wy = new Float32Array(NC);
   baseCh = new Int32Array(NC); chA = new Int32Array(NC); prevCh = new Int32Array(NC).fill(-1);
   baseAlb = new Float32Array(NC * 3); albA = new Float32Array(NC * 3);
@@ -172,14 +178,18 @@ function resizeCells() {
   glowC.width = cols; glowC.height = rows; glowImg = glowX.createImageData(cols, rows);
   g2C.width = Math.max(1, Math.ceil(cols / 6)); g2C.height = Math.max(1, Math.ceil(rows / 6));
   g3C.width = Math.max(1, Math.ceil(cols / 16)); g3C.height = Math.max(1, Math.ceil(rows / 16));
-  atlas.clear();
+  atlas.clear(); if (typeof rainSpr !== 'undefined') rainSpr.clear();
   baseDirty = true;
 }
 
 // ================================================================ projection
 const w2s = (x, y) => [(x - y) * TWp / 2 + cam.ox, (x + y) * THp / 2 + cam.oy];
 function s2w(sx, sy) { const a = (sx - cam.ox) / (TWp / 2), b = (sy - cam.oy) / (THp / 2); return [(a + b) / 2, (b - a) / 2]; }
-function centerOn(x, y) { cam.ox = W / 2 - (x - y) * TWp / 2; cam.oy = H / 2 - (x + y) * THp / 2; }
+function setCam(ox, oy) { cam.tx = ox; cam.ty = oy; cam.ox = Math.round(ox / cw) * cw; cam.oy = Math.round(oy / ch) * ch; }
+function panBy(dx, dy) { setCam(cam.tx + dx, cam.ty + dy); }
+function centerOn(x, y) { setCam(W / 2 - (x - y) * TWp / 2, H / 2 - (x + y) * THp / 2); }
+// characters shrink with zoom down to a floor; past it the world keeps shrinking under a fixed grid
+const fontFor = tw => clamp(tw / (TILE_COLS * 0.6), 4, 18);
 function cellOf(x, y) { const s = w2s(x, y); return [Math.floor(s[0] / cw), Math.floor(s[1] / ch)]; }
 
 // ================================================================ roads + spatial hash
@@ -237,7 +247,7 @@ function qd(x, y) {
   QL = lat; QS = sa; QZ = zz;
   return best - HW;
 }
-const zpx = () => 1.6 * THp;   // screen lift of a fully raised deck
+const zpx = () => 2.3 * THp;   // screen lift of a fully raised deck
 function cellOfZ(z, x, y) { const s = w2s(x, y); return [Math.floor(s[0] / cw), Math.floor((s[1] - z * zpx()) / ch)]; }
 function zAtRoad(r, s) {
   if (!r.z) return 0;
@@ -574,9 +584,9 @@ function commitStroke(raw, quiet) {
 let cars = [], cid = 0, simT = 0;
 const incidents = [];
 const WEATHER = [
-  { name: 'drizzle', rain: 0.01, vf: 1.0, T: 1.3, b: 2.7, amb: 1.0 },
-  { name: 'heavy', rain: 0.024, vf: 0.93, T: 1.5, b: 2.3, amb: 0.95 },
-  { name: 'storm', rain: 0.05, vf: 0.85, T: 1.75, b: 2.0, amb: 0.88 }
+  { name: 'drizzle', rain: 0.014, vf: 1.0, T: 1.3, b: 2.7, amb: 1.0 },
+  { name: 'heavy', rain: 0.036, vf: 0.93, T: 1.5, b: 2.3, amb: 0.95 },
+  { name: 'storm', rain: 0.065, vf: 0.85, T: 1.75, b: 2.0, amb: 0.88 }
 ];
 const TRAFFIC = [{ name: 'light', k: 0.45 }, { name: 'normal', k: 1 }, { name: 'rush', k: 1.9 }];
 let wi = 1, ti = 1;
@@ -611,6 +621,14 @@ function chooseConn(lane, car) {
   for (const c of lane.conns) { x -= c.w; if (x <= 0) return c; }
   return lane.conns[0];
 }
+let pathCars = new Map(), carGrid = new Map();
+function indexCars() {
+  pathCars = new Map(); carGrid = new Map();
+  for (const o of cars) {
+    let a = pathCars.get(o.path); if (!a) pathCars.set(o.path, a = []); a.push(o);
+    const k = bkey(Math.floor(o.x / 14), Math.floor(o.y / 14)); let g = carGrid.get(k); if (!g) carGrid.set(k, g = []); g.push(o);
+  }
+}
 function blocked(c, lane, conn, rem) {
   if (lane.to.sig && lane.phase != null) {
     const st = sigState(lane.to, lane.phase);
@@ -619,16 +637,19 @@ function blocked(c, lane, conn, rem) {
   }
   if (c.ghost > 0) return false;
   for (const k of conn.conflicts) if (k.occ > 0) return true;
-  for (const o of cars) if (o.path === conn.target && o.s < o.len + 1.2 && o.v < 1.5) return true;
+  for (const o of pathCars.get(conn.target) || []) if (o.s < o.len + 1.2 && o.v < 1.5) return true;
   return false;
 }
 function updateCars(dt) {
   const wx_ = WEATHER[wi], A = 1.8, B = wx_.b, T = wx_.T, S0 = 1.2;
+  indexCars();
   for (const c of cars) {
     if (c.dead) continue;
     const p = c.path;
     let gap = 1e9, vl = 0, held = false;
-    if (c.ghost <= 0) for (const o of cars) {
+    const gx_ = Math.floor(c.x / 14), gy_ = Math.floor(c.y / 14), near = [];
+    if (c.ghost <= 0) for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const g = carGrid.get(bkey(gx_ + a, gy_ + b)); if (g) for (const o of g) near.push(o); }
+    for (const o of near) {
       if (o === c || o.dead || Math.abs((o.z || 0) - (c.z || 0)) > 0.45) continue;
       if (o.path === p) { const f = o.s - c.s; if (f > 0) { const g = f - (c.len + o.len) / 2; if (g < gap) { gap = g; vl = o.v; } } continue; }
       const dx = o.x - c.x, dy = o.y - c.y, f = dx * c.hx + dy * c.hy;
@@ -771,7 +792,7 @@ function updateIncidents(dt) {
 }
 
 // ================================================================ game: places, trips, money, saving
-const PLACE_R = 5, COST = 1.5, SAVE_KEY = 'rainline.save.v1';
+const PLACE_R = 5, COST = 3.5, SAVE_KEY = 'rainline.save.v1';
 const PLACE_NAMES = ['MOTEL', 'DINER', 'GAS 24', 'KARAOKE', 'ARCADE', 'NOODLES', 'LAUNDRY', 'BOWLING', 'CINEMA', 'DOCKS', 'RADIO', 'PIZZA', 'HOSPITAL', 'JAZZ BAR', 'PAWN', 'TATTOO'];
 const NEONS = [[1, 0.3, 0.7], [0.3, 0.9, 1], [1, 0.62, 0.2], [0.7, 0.4, 1], [0.4, 1, 0.55], [1, 0.9, 0.3], [1, 0.35, 0.3]];
 let INTO = new Map(), bridgeMode = false, follow = null;
@@ -817,7 +838,7 @@ function updateDemand(dt) {
     const d = pick(dests);
     let lane = null, best = Infinity;
     for (const l of p.spawn) { const v = d.dist.get(l); if (v != null && v < best) { best = v; lane = l; } }
-    if (!lane || cars.some(o => o.path === lane && o.s < 4.5)) continue;
+    if (!lane || (pathCars.get(lane) || []).some(o => o.s < 4.5)) continue;
     const hasCop = cars.some(c => c.cop && !c.responder), q_ = rnd();
     const car = newCar(lane, 0, !hasCop && cars.length > 10 && q_ < 0.06 ? 'cop' : q_ < 0.14 ? 'taxi' : q_ < 0.2 ? 'bus' : 'car');
     car.dest = d; car.orig = p; car.t0 = simT; car.ideal = best;
@@ -1030,7 +1051,7 @@ function updateFollow(dt) {
   if (follow.dead || !cars.includes(follow)) { follow = null; cardEl.hidden = true; return; }
   const [sx, sy] = w2s(follow.x, follow.y), k = Math.min(1, dt * 3);
   const dx = (W / 2 - sx) * k, dy = (H * 0.45 - (sy - (follow.z || 0) * zpx())) * k;
-  if (Math.abs(dx) + Math.abs(dy) > 0.2) { cam.ox += dx; cam.oy += dy; baseDirty = true; }
+  if (Math.abs(dx) + Math.abs(dy) > 0.2) panBy(dx, dy);
   cardT -= dt;
   if (cardT > 0) return;
   cardT = 0.25;
@@ -1057,15 +1078,58 @@ function edgeChar(eT, eB, eL, eR) {
 function setBase(i, code, al) {
   baseCh[i] = code; baseAlb[i * 3] = al[0]; baseAlb[i * 3 + 1] = al[1]; baseAlb[i * 3 + 2] = al[2];
 }
+let baseEw = 1;
 function rebuildBase() {
   buildSegHash();
-  baseEm.fill(0); baseLit.fill(0); isRoad.fill(0);
+  computeCells(0, 0, cols - 1, rows - 1);
+  finishBase();
+  lastOx = cam.ox; lastOy = cam.oy;
+}
+// slide the cached grid when the camera moves by whole cells, then fill only the uncovered strips
+let lastOx = 0, lastOy = 0, shiftTmp = null;
+const gscr = mk(), gscrX = gscr.getContext('2d');
+function shiftBase(dc, dr) {
+  if (Math.abs(dc) >= cols || Math.abs(dr) >= rows) { rebuildBase(); return; }
+  const mv = (arr, k) => {
+    if (!shiftTmp || shiftTmp.length < arr.length) shiftTmp = new Float64Array(arr.length);
+    for (let i = 0; i < arr.length; i++) shiftTmp[i] = arr[i];
+    for (let r = 0; r < rows; r++) {
+      const sr = r - dr;
+      for (let c = 0; c < cols; c++) {
+        const sc = c - dc, di = (r * cols + c) * k;
+        if (sr < 0 || sr >= rows || sc < 0 || sc >= cols) { for (let j = 0; j < k; j++) arr[di + j] = k === 1 && arr === prevCh ? -1 : 0; continue; }
+        const si = (sr * cols + sc) * k;
+        for (let j = 0; j < k; j++) arr[di + j] = shiftTmp[si + j];
+      }
+    }
+  };
+  mv(baseCh, 1); mv(baseAlb, 3); mv(isRoad, 1); mv(wx, 1); mv(wy, 1); mv(prevCh, 1);
+  gscr.width = glyphC.width; gscr.height = glyphC.height;
+  gscrX.drawImage(glyphC, 0, 0);
+  glyphX.fillStyle = '#000'; glyphX.fillRect(0, 0, glyphC.width, glyphC.height);
+  glyphX.drawImage(gscr, dc * cwD, dr * chD);
+  if (dc > 0) computeCells(0, 0, dc - 1, rows - 1); else if (dc < 0) computeCells(cols + dc, 0, cols - 1, rows - 1);
+  if (dr > 0) computeCells(0, 0, cols - 1, dr - 1); else if (dr < 0) computeCells(0, rows + dr, cols - 1, rows - 1);
+  finishBase();
+  lastOx = cam.ox; lastOy = cam.oy;
+}
+function strokeRegion() {
+  if (!stroke) return;
+  buildSegHash();
+  const n = stroke.pts.length, pad = (HW + 2) * TWp;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let k = Math.max(0, n - 40); k < n; k++) { const [sx, sy] = w2s(stroke.pts[k][0], stroke.pts[k][1]); x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy); }
+  computeCells(clamp(Math.floor((x0 - pad) / cw), 0, cols - 1), clamp(Math.floor((y0 - pad) / ch), 0, rows - 1), clamp(Math.floor((x1 + pad) / cw), 0, cols - 1), clamp(Math.floor((y1 + pad) / ch), 0, rows - 1));
+  finishBase();
+}
+function computeCells(c0, r0, c1, r1) {
   // world offsets of half a cell down and half a cell right
   const o0 = s2w(0, 0), v1 = s2w(0, ch / 2), h1 = s2w(cw / 2, 0);
   const vX = v1[0] - o0[0], vY = v1[1] - o0[1], hX = h1[0] - o0[0], hY = h1[1] - o0[1];
-  const ew = 1.3 * Math.max(Math.abs(vX) + Math.abs(vY), Math.abs(hX) + Math.abs(hY));
-  const tmp = [0, 0, 0];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+  const ew = baseEw = 1.3 * Math.max(Math.abs(vX) + Math.abs(vY), Math.abs(hX) + Math.abs(hY));
+  const tmp = [0, 0, 0], hasDeck = dsegN > 0;
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+    isRoad[r * cols + c] = 0;
     const i = r * cols + c, sx = (c + 0.5) * cw, sy = (r + 0.5) * ch;
     const w = s2w(sx, sy), x = w[0], y = w[1];
     wx[i] = x; wy[i] = y;
@@ -1096,7 +1160,7 @@ function rebuildBase() {
     for (const pl of places) if (Math.abs(pl.x - x) + Math.abs(pl.y - y) < 4.4) { lot = true; break; }
     if (lot) { isRoad[i] = 1; setBase(i, h < 0.22 ? CH.dot : h < 0.28 ? CH.colon : CH.sp, AL.road); continue; }
     // ground: a dense field of grass blades that lean in patches
-    const n = vnoise(x * 0.16, y * 0.16), dens = 0.3 + 0.55 * n;
+    const n = vnoise(x * 0.11, y * 0.11), dens = n > 0.64 ? 0.05 + 0.3 * (n - 0.64) / 0.36 : 0.012;
     if (h < dens) {
       const lean = vnoise(x * 0.06 + 40, y * 0.06);
       const code = h < dens * 0.12 ? CH.com : h < dens * 0.24 ? CH.apos : lean < 0.42 ? CH.sl : lean < 0.58 ? CH.bar : CH.bs;
@@ -1105,6 +1169,16 @@ function rebuildBase() {
       setBase(i, code, tmp);
     } else { baseCh[i] = CH.sp; baseAlb[i * 3] = baseAlb[i * 3 + 1] = baseAlb[i * 3 + 2] = 0; }
   }
+  if (hasDeck) {
+    // shade the ground beneath decks
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+      const i = r * cols + c;
+      if (baseCh[i] !== CH.sp && qd(wx[i], wy[i]) < 0.6) { baseAlb[i * 3] *= 0.3; baseAlb[i * 3 + 1] *= 0.3; baseAlb[i * 3 + 2] *= 0.34; }
+    }
+  }
+}
+function finishBase() {
+  baseEm.fill(0); baseLit.fill(0);
   // lamps: a tall pole of characters, a little head, and a pool of sodium light
   const poleRows = Math.max(3, Math.round(3.3 * THp / ch));
   for (const L of lamps) {
@@ -1118,7 +1192,7 @@ function rebuildBase() {
     reflectInto(baseLit, c, r, LC.sodium, 0.9, true);
   }
   deckMask.fill(0);
-  if (dsegN) buildDeck(ew);
+  if (dsegN) buildDeck(baseEw);
   baseDirty = false;
 }
 let deckZ = new Float32Array(0);
@@ -1126,10 +1200,11 @@ function buildDeck(ew) {
   const ZP = zpx();
   if (deckZ.length !== NC) deckZ = new Float32Array(NC);
   // support pillars under the raised stretches
-  for (const r of roads) if (r.z) for (let u = 3; u < r.len; u += 6) {
+  for (const r of roads) if (r.z) for (let u = 3; u < r.len; u += 5) {
     const z = zAtRoad(r, u); if (z < 0.75) continue;
     const p = pointAt(r, u), [c, r0] = cellOf(p[0], p[1]), top = r0 - Math.round(z * ZP / ch);
-    for (let rr_ = top; rr_ <= r0; rr_++) { putBase(c, rr_, CH.bar, [0.32, 0.34, 0.42]); putBase(c + 1, rr_, CH.bar, [0.24, 0.26, 0.32]); }
+    for (let rr_ = top; rr_ <= r0; rr_++) { putBase(c - 1, rr_, CH.bar, [0.36, 0.38, 0.46]); putBase(c, rr_, CH.hash, [0.3, 0.32, 0.4]); putBase(c + 1, rr_, CH.bar, [0.22, 0.24, 0.3]); }
+    putBase(c - 1, r0, C('['), [0.4, 0.42, 0.5]); putBase(c + 1, r0, C(']'), [0.4, 0.42, 0.5]);
   }
   // deck surface: solve for the height of the deck seen through each cell
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
@@ -1140,24 +1215,24 @@ function buildDeck(ew) {
     w = s2w(sx, sy + o); e = qd(w[0], w[1]);
     if (e > ew) continue;
     const lat0 = QL, s0 = QS, i = r * cols + c;
-    deckZ[i] = QZ;
+    deckZ[i] = QZ; baseEm[i * 3] = baseEm[i * 3 + 1] = baseEm[i * 3 + 2] = 0;
     const A = s2w(sx, sy - ch / 2 + o), B = s2w(sx, sy + ch / 2 + o), Lw = s2w(sx - cw / 2, sy + o), Rw = s2w(sx + cw / 2, sy + o);
     const eT = qd(A[0], A[1]), lT = QL, eB = qd(B[0], B[1]), lB = QL, eL = qd(Lw[0], Lw[1]), lL = QL, eR = qd(Rw[0], Rw[1]), lR = QL;
-    if (Math.min(e, eT, eB, eL, eR) < 0 && Math.max(e, eT, eB, eL, eR) > 0) setBase(i, edgeChar(eT, eB, eL, eR), [1.0, 1.05, 1.2]);
+    if (Math.min(e, eT, eB, eL, eR) < 0 && Math.max(e, eT, eB, eL, eR) > 0) { setBase(i, edgeChar(eT, eB, eL, eR), [1.15, 1.2, 1.4]); baseEm[i * 3] = 0.05; baseEm[i * 3 + 1] = 0.06; baseEm[i * 3 + 2] = 0.09; }
     else if (e < 0) {
       if (Math.min(lT, lB, lL, lR, lat0) < 0 && Math.max(lT, lB, lL, lR, lat0) > 0 && (s0 % 3.4) < 1.9) setBase(i, edgeChar(lT, lB, lL, lR), AL.center);
-      else { const h = hash(Math.floor(w[0] * 14), Math.floor(w[1] * 14)); if (h < 0.3) setBase(i, h < 0.22 ? CH.dot : CH.colon, [0.42, 0.45, 0.56]); else { baseCh[i] = CH.sp; baseAlb[i * 3] = baseAlb[i * 3 + 1] = baseAlb[i * 3 + 2] = 0; } }
+      else { const h = hash(Math.floor(w[0] * 14), Math.floor(w[1] * 14)); setBase(i, h < 0.55 ? CH.colon : h < 0.8 ? CH.dot : CH.com, [0.46, 0.49, 0.6]); }
     } else continue;
     deckMask[i] = 1; isRoad[i] = 1; wx[i] = w[0]; wy[i] = w[1];
-    baseLit[i * 3] = baseLit[i * 3 + 1] = baseLit[i * 3 + 2] = 0; baseEm[i * 3] = baseEm[i * 3 + 1] = baseEm[i * 3 + 2] = 0;
+    baseLit[i * 3] = baseLit[i * 3 + 1] = baseLit[i * 3 + 2] = 0;
   }
   // a band below the deck's front edge gives it thickness
-  const face = Math.max(1, Math.round(0.3 * ZP / ch));
+  const face = Math.max(2, Math.round(0.45 * ZP / ch));
   for (let r = rows - 2; r >= 0; r--) for (let c = 0; c < cols; c++) {
     if (deckMask[r * cols + c] !== 1 || deckMask[(r + 1) * cols + c] || deckZ[r * cols + c] < 0.45) continue;
     for (let k = 1; k <= face && r + k < rows; k++) {
       const i = (r + k) * cols + c; if (deckMask[i] === 1) break;
-      setBase(i, k === 1 ? CH.eq : CH.colon, [0.24, 0.26, 0.33]); deckMask[i] = 2; isRoad[i] = 0;
+      setBase(i, k === 1 ? CH.eq : k === face ? CH.under : CH.hash, k === 1 ? [0.5, 0.52, 0.62] : [0.22, 0.24, 0.31]); deckMask[i] = 2; isRoad[i] = 0;
       baseEm[i * 3] = baseEm[i * 3 + 1] = baseEm[i * 3 + 2] = 0;
     }
   }
@@ -1287,10 +1362,55 @@ function drawCar(c) {
 
 // ================================================================ rain
 let drops = [], splashes = [], flash = 0, flashQ = 0;
-const WIND = 0.08;
+const WIND = 0.1, RAIN_EM = [0.55, 0.65, 1.0];
+// each drop is one pre-rendered streak of characters, picked by length and by how lit its cell is
+const rainSpr = new Map();
+function rainSprite(len, lvl) {
+  const key = len * 16 + lvl;
+  let g = rainSpr.get(key);
+  if (g) return g;
+  const sl = WIND * (ch / cw), w = Math.ceil(cwD * (1 + (len - 1) * sl)) + 2;
+  g = mk(w, chD * len);
+  const x = g.getContext('2d');
+  x.font = `500 ${Math.round(F * DPR)}px ${FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle';
+  const b = 0.5 + lvl / 7 * 1.2, hx = w - cwD / 2 - 1;
+  for (let k = 0; k < len; k++) {
+    const k2 = (1 - k / len) * b;
+    x.fillStyle = `rgb(${Math.min(255, AL.rain[0] * 255 * k2) | 0},${Math.min(255, AL.rain[1] * 255 * k2) | 0},${Math.min(255, AL.rain[2] * 255 * k2) | 0})`;
+    x.fillText(k < 3 ? '|' : "'", hx - k * sl * cwD, (len - 1 - k) * chD + chD / 2);
+  }
+  rainSpr.set(key, g);
+  return g;
+}
+function drawRainSprites() {
+  ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 1;
+  for (const d of drops) {
+    const c = Math.floor(d.c), r = Math.floor(d.r);
+    let lvl = 1;
+    if (c >= 0 && r >= 0 && c < cols && r < rows) { const i = (r * cols + c) * 3; lvl = clamp(((litA[i] * 0.3 + litA[i + 1] * 0.5 + litA[i + 2] * 0.2) * 5) | 0, 0, 7); }
+    const g = rainSprite(d.len, lvl);
+    ctx.drawImage(g, (c + 1) * cwD - g.width, (r - d.len + 1) * chD);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+let bolts = [];
+// a jagged ASCII lightning bolt from the top of the screen, with a branch or two
+function strike() {
+  flash = 1; flashQ = 0.12; thunder();
+  const segs = [];
+  const grow = (c, r, len, depth) => {
+    for (let k = 0; k < len; k++) {
+      const dc = pick([-1, -1, 0, 1, 1, 1]); c += dc; r += 1;
+      segs.push([c, r, dc < 0 ? CH.sl : dc > 0 ? CH.bs : CH.bar]);
+      if (depth < 2 && rnd() < 0.06) grow(c, r, (len - k) * 0.4 | 0, depth + 1);
+    }
+  };
+  grow((cols * rr(0.15, 0.85)) | 0, -1, (rows * rr(0.35, 0.7)) | 0, 0);
+  bolts.push({ segs, t: 0 });
+}
 function setRain() {
   const target = Math.round(NC * WEATHER[wi].rain * 0.55 * (REDUCED ? 0.4 : 1));
-  while (drops.length < target) drops.push({ c: rnd() * (cols + 20) - 10, r: rnd() * rows, v: rr(650, 1050) / ch, len: 2 + ((rnd() * 4) | 0) });
+  while (drops.length < target) drops.push({ c: rnd() * (cols + 20) - 10, r: rnd() * rows, v: rr(750, 1200) / ch, len: 3 + ((rnd() * 5) | 0) });
   drops.length = target;
 }
 function updateRain(dt) {
@@ -1298,17 +1418,20 @@ function updateRain(dt) {
     d.r += d.v * dt; d.c += d.v * dt * WIND * (ch / cw);
     if (d.r > rows + 6) { d.r = -1 - rnd() * 8; d.c = rnd() * (cols + 20) - 10; d.v = rr(650, 1050) / ch; }
   }
-  let n = NC * WEATHER[wi].rain * 0.6 * dt;
+  let n = NC * WEATHER[wi].rain * 1.0 * dt;
   while (n > 0) { if (rnd() < n) splashes.push({ c: (rnd() * cols) | 0, r: (rnd() * rows) | 0, t: 0 }); n -= 1; }
   for (let i = splashes.length - 1; i >= 0; i--) { splashes[i].t += dt; if (splashes[i].t > 0.3) splashes.splice(i, 1); }
 }
 
 // ================================================================ frame
-let last = performance.now(), fpsS = 60, statT = 0, nextWave = 8, saveT = 5;
+let slowT = 0, last = performance.now(), fpsS = 60, statT = 0, nextWave = 8, saveT = 5;
+const flashEl = document.getElementById('flash');
 const statsEl = document.getElementById('stats'), moneyEl = document.getElementById('money'), hintEl = document.getElementById('hint');
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   fpsS += (1 / Math.max(dt, 1e-3) - fpsS) * 0.05;
+  slowT = fpsS < 38 ? slowT + dt : 0;
+  if (slowT > 3 && DPR > 1.01) { slowT = -4; dprCap = Math.max(1, DPR - 0.5); const [x, y] = s2w(W / 2, H / 2); resizeAll(); centerOn(x, y); setRain(); }
   simT += dt;
 
   // ---- simulation
@@ -1325,13 +1448,17 @@ function frame(now) {
   updateSound();
   updateFollow(dt);
   updateRain(dt);
-  if (WEATHER[wi].name === 'storm' && !REDUCED && rnd() < dt * 0.06) { flash = 1; flashQ = 0.14; thunder(); }
+  if (!REDUCED && rnd() < dt * [0, 0.03, 0.13][wi]) strike();
+  for (let k = bolts.length - 1; k >= 0; k--) { bolts[k].t += dt; if (bolts[k].t > 0.45) bolts.splice(k, 1); }
   if (flashQ > 0) { flashQ -= dt; if (flashQ <= 0) flash = 0.8; }
   flash = Math.max(0, flash - dt * 4);
 
   // ---- base layer (roads, lamps); rebuilt when the camera or the roads change
-  if (stroke) baseDirty = true;
   if (baseDirty) rebuildBase();
+  else {
+    if (cam.ox !== lastOx || cam.oy !== lastOy) shiftBase(Math.round((cam.ox - lastOx) / cw), Math.round((cam.oy - lastOy) / ch));
+    if (stroke) strokeRegion();
+  }
 
   // ---- per-frame cells
   chA.set(baseCh); albA.set(baseAlb); emA.set(baseEm);
@@ -1350,7 +1477,11 @@ function frame(now) {
   }
   // cars (paint back-to-front so nearer cars win overlapping cells)
   cars.sort((a, b) => (a.x + a.y) - (b.x + b.y));
-  for (const c of cars) drawCar(c);
+  for (const c of cars) {
+    const [sx, sy] = w2s(c.x, c.y);
+    if (sx < -90 || sx > W + 90 || sy < -60 || sy > H + 120) continue;
+    drawCar(c);
+  }
   // road flares at incidents
   for (const inc of incidents) for (const f of inc.flares) {
     const fl = 0.7 + 0.3 * Math.sin(simT * 23 + f.ph) * Math.sin(simT * 7 + f.ph), [c, r] = cellOf(f.x, f.y);
@@ -1375,12 +1506,8 @@ function frame(now) {
   }
   for (const [c, r, col, I] of refl) if (I > 0.02) reflectInto(litA, c, r, col, I, false);
   // rain (lit by whatever light the cell already has)
-  const slant = WIND * (ch / cw);
-  for (const d of drops) for (let k = 0; k < d.len; k++) {
-    const k2 = 1 - k / d.len;
-    put(Math.floor(d.c - k * slant), Math.floor(d.r) - k, k === 0 ? CH.bar : CH.apos, [AL.rain[0] * k2, AL.rain[1] * k2, AL.rain[2] * k2]);
-  }
   for (const s of splashes) if (s.r < rows && s.c < cols && isRoad[s.r * cols + s.c]) put(s.c, s.r, s.t < 0.1 ? CH.dot : s.t < 0.2 ? CH.o : CH.deg, AL.splash);
+  for (const b of bolts) { const on = b.t < 0.08 || (b.t > 0.16 && b.t < 0.3); if (on) for (const [c, r, chr] of b.segs) put(c, r, chr, [1, 1, 1], [0.85, 0.9, 1], 4); }
   drawGameLayer(dt);
 
   // ---- resolve colour per cell
@@ -1412,14 +1539,15 @@ function frame(now) {
   ctx.globalCompositeOperation = 'multiply';
   ctx.drawImage(colorC, 0, 0, cols * cwD, rows * chD);
   ctx.imageSmoothingEnabled = true;
+  drawRainSprites();
   g2X.clearRect(0, 0, g2C.width, g2C.height); g2X.drawImage(glowC, 0, 0, g2C.width, g2C.height);
   g3X.clearRect(0, 0, g3C.width, g3C.height); g3X.drawImage(g2C, 0, 0, g3C.width, g3C.height);
   ctx.globalCompositeOperation = 'lighter';
-  ctx.globalAlpha = 0.35; ctx.drawImage(glowC, 0, 0, cols * cwD, rows * chD);
-  ctx.globalAlpha = 0.9; ctx.drawImage(g2C, 0, 0, cols * cwD, rows * chD);
+  ctx.globalAlpha = 1; ctx.drawImage(g2C, 0, 0, cols * cwD, rows * chD);
   ctx.globalAlpha = 0.8; ctx.drawImage(g3C, 0, 0, cols * cwD, rows * chD);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-  ctx.drawImage(vigC, 0, 0);
+  const fo = flash > 0.02 ? (flash * 0.22).toFixed(3) : '0';
+  if (fo !== flashEl.style.opacity) flashEl.style.opacity = fo;
 
   statT -= dt;
   if (statT <= 0) {
@@ -1441,10 +1569,27 @@ const ptrs = new Map();
 let pinch = null, panning = false;
 function zoomAt(mx, my, f) {
   const [x, y] = s2w(mx, my);
-  const nF = clamp(F * f, 4, 18);
-  if (Math.abs(nF - F) < 1e-3) return;
-  F = nF; resizeCells(); setRain();
-  cam.ox = mx - (x - y) * TWp / 2; cam.oy = my - (x + y) * THp / 2;
+  const nz = clamp(zoomTW * f, 3, 260);
+  if (Math.abs(nz - zoomTW) < 1e-3) return;
+  zoomTW = nz;
+  const nF = fontFor(zoomTW), ncw = Math.max(3, Math.round(nF * 0.6 * DPR));
+  if (ncw !== cwD) { F = nF; resizeCells(); setRain(); } else { TWp = zoomTW; THp = TWp / 2; }
+  setCam(mx - (x - y) * TWp / 2, my - (x + y) * THp / 2);
+  baseDirty = true;
+}
+function fitMap() {
+  const pts = [];
+  for (const p of places) pts.push([p.x, p.y]);
+  for (const r of roads) for (let i = 0; i < r.pts.length; i += 4) pts.push(r.pts[i]);
+  if (!pts.length) return;
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const [x, y] of pts) { u0 = Math.min(u0, x - y); u1 = Math.max(u1, x - y); v0 = Math.min(v0, x + y); v1 = Math.max(v1, x + y); }
+  const du = Math.max(4, u1 - u0 + 12), dv = Math.max(4, v1 - v0 + 16);
+  zoomTW = clamp(Math.min(2 * (W - 32) / du, 4 * (H - 230) / dv), 3, 260);
+  F = fontFor(zoomTW); resizeCells(); setRain();
+  const cx = (u0 + u1) / 2, cy = (v0 + v1) / 2, x = (cx + cy) / 2, y = (cy - cx) / 2;
+  setCam(W / 2 - (x - y) * TWp / 2, H * 0.47 - (x + y) * THp / 2);
+  follow = null; cardEl.hidden = true; baseDirty = true;
 }
 let downAt = null;
 function startStroke(e) { const p = s2w(e.clientX, e.clientY); stroke = { pts: [p], t: [simT] }; }
@@ -1470,26 +1615,26 @@ view.addEventListener('pointermove', e => {
   if (ptrs.size > 1 || (panning && downAt && downAt.moved)) { follow = null; cardEl.hidden = true; }
   if (ptrs.size === 1) {
     if (stroke) extendStroke(e);
-    else if (panning) { cam.ox += e.clientX - p.x; cam.oy += e.clientY - p.y; baseDirty = true; }
+    else if (panning) panBy(e.clientX - p.x, e.clientY - p.y);
     p.x = e.clientX; p.y = e.clientY;
     return;
   }
   p.x = e.clientX; p.y = e.clientY;
   const [a, b] = [...ptrs.values()];
   const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, d = Math.hypot(a.x - b.x, a.y - b.y);
-  if (pinch) { cam.ox += mx - pinch.mx; cam.oy += my - pinch.my; zoomAt(mx, my, d / Math.max(1, pinch.d)); baseDirty = true; }
+  if (pinch) { panBy(mx - pinch.mx, my - pinch.my); zoomAt(mx, my, d / Math.max(1, pinch.d)); }
   pinch = { mx, my, d };
 });
 const up = e => {
   if (!ptrs.has(e.pointerId)) return;
   ptrs.delete(e.pointerId); pinch = null;
   const tap = downAt && !downAt.moved && performance.now() - downAt.t < 400 && ptrs.size === 0;
-  if (tap) { stroke = null; handleTap(e.clientX, e.clientY); baseDirty = true; }
+  if (tap) { const had = !!stroke; stroke = null; handleTap(e.clientX, e.clientY); if (had) baseDirty = true; }
   if (stroke && ptrs.size === 0) { const s = stroke; stroke = null; commitStroke(s.pts); baseDirty = true; }
   if (ptrs.size === 0) panning = false;
 };
 view.addEventListener('pointerup', up); view.addEventListener('pointercancel', up);
-view.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0012)); baseDirty = true; }, { passive: false });
+view.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0012)); }, { passive: false });
 addEventListener('resize', () => { const [x, y] = s2w(W / 2, H / 2); resizeAll(); centerOn(x, y); setRain(); });
 
 const $ = id => document.getElementById(id);
@@ -1515,11 +1660,13 @@ $('bUndo').onclick = () => { if (!roads.length) return; const r = roads.pop(); m
 $('bClear').onclick = () => { for (const r of roads) money += r.cost || 0; roads = []; cars = []; incidents.length = 0; rebuildNetwork(); save(); };
 $('bRain').onclick = () => { wi = (wi + 1) % WEATHER.length; $('vRain').textContent = WEATHER[wi].name; setRain(); };
 $('bTraffic').onclick = () => { ti = (ti + 1) % TRAFFIC.length; $('vTraffic').textContent = TRAFFIC[ti].name; };
-$('bCrash').onclick = triggerCrash;
+$('bCrash').onclick = () => triggerCrash(false);
+$('bMap').onclick = fitMap;
 
 // ================================================================ boot: a small starter network so the city is alive on open
 resizeAll();
 F = clamp(Math.round(W / 65), 5, 8);
+zoomTW = F * 0.6 * TILE_COLS;
 resizeCells();
 centerOn(0, 0);
 setRain();
