@@ -1382,7 +1382,7 @@ function drawPed(x, y, col) {
   occlDepth = -1e9;
 }
 function drawPeds() {
-  if (TWp < 30) return;
+  if (TWp < 30 || mapView) return;
   for (const w of walkers) {
     const p = pointAt(w.r, w.s), a = pointAt(w.r, w.s - 0.3), b = pointAt(w.r, w.s + 0.3), tx = b[0] - a[0], ty = b[1] - a[1], l = Math.hypot(tx, ty) || 1;
     const off = (HW + 0.85) * w.side;
@@ -1451,11 +1451,12 @@ function cityBlock(bx, by) {
   if (h1 > 0.1) {
     const x0 = bx * BS + 1.4 + h2 * 1.4, x1 = (bx + 1) * BS - 1.4 - h3 * 1.4, y0 = by * BS + 1.4 + h3 * 1.2, y1 = (by + 1) * BS - 1.4 - h2 * 1.2;
     let ok = true;
-    for (let i = 0; i <= 3 && ok; i++) for (let j = 0; j <= 3 && ok; j++) if (q(x0 + (x1 - x0) * i / 3, y0 + (y1 - y0) * j / 3) < 2.2) ok = false;
+    let near = 1e9;
+    for (let i = 0; i <= 3 && ok; i++) for (let j = 0; j <= 3 && ok; j++) { const e_ = q(x0 + (x1 - x0) * i / 3, y0 + (y1 - y0) * j / 3); near = Math.min(near, e_); if (e_ < 2.2) ok = false; }
     const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
     if (ok) for (const pl of places) { const B = pl.box; if (Math.hypot(pl.x - cx, pl.y - cy) < 7.5 || (B && x0 < B.x1 + 1.5 && x1 > B.x0 - 1.5 && y0 < B.y1 + 1.5 && y1 > B.y0 - 1.5)) ok = false; }
     if (ok) {
-      const floors = 3 + Math.floor(Math.pow(h2, 1.5) * 15);
+      const floors = Math.min(near < 6 ? 3 : near < 12 ? 6 : 11, 2 + Math.floor(Math.pow(h2, 1.5) * 10));
       b = { x0, x1, y0, y1, cx, cy, floors, seed: (Math.imul(bx, 73856093) ^ Math.imul(by, 19349663)) >>> 0,
         bb: h3 < 0.18 && floors > 5 ? BILL[(h1 * 997 | 0) % BILL.length] : null, bbc: NEONS[(h2 * 97 | 0) % NEONS.length], beacon: floors >= 12,
         tone: 0.8 + h3 * 0.4 };
@@ -1486,15 +1487,15 @@ function shadeTower(i, B, gx, gy, hp, roof) {
   const H = B.floors * FLP, du = cw / (TWp / 2), t = B.tone;
   if (roof) {
     const ed = Math.min(gx - B.x0, B.x1 - gx, gy - B.y0, B.y1 - gy);
-    if (ed < 0.3) return setCell(i, CH.dash, 0.8 * t, 0.84 * t, 1.0 * t, 0.1, 0.11, 0.16);
+    if (ed < 0.3) return setCell(i, CH.dash, 0.3 * t, 0.32 * t, 0.42 * t, 0.02, 0.02, 0.04);
     const hq = hash(Math.floor(gx * 2.5), Math.floor(gy * 2.5) + 9);
     if (Math.hypot(gx - B.cx, gy - B.cy) < 1 && B.floors < 12 && (B.seed & 3) === 0) return setCell(i, CH.hash, 0.3, 0.3, 0.36, 0.02, 0.02, 0.03);
     return setCell(i, hq < 0.18 ? CH.dot : hq < 0.24 ? CH.colon : CH.sp, 0.2 * t, 0.21 * t, 0.27 * t, 0, 0, 0);
   }
   const side = (B.x1 - gx) < (B.y1 - gy) ? 1 : 0;
   const u = side ? gy - B.y0 : gx - B.x0, len = side ? B.y1 - B.y0 : B.x1 - B.x0, sh = side ? 0.55 : 1;
-  if (H - hp < ch * 0.9) return setCell(i, CH.under, 0.85 * sh * t, 0.88 * sh * t, 1.05 * sh * t, 0.1, 0.11, 0.16);
-  if (u < du * 0.9 || len - u < du * 0.9) return setCell(i, CH.bar, 0.8 * sh * t, 0.84 * sh * t, 1.0 * sh * t, 0.1 * sh, 0.11 * sh, 0.16 * sh);
+  if (H - hp < ch * 0.9) return setCell(i, CH.under, 0.34 * sh * t, 0.36 * sh * t, 0.46 * sh * t, 0.03, 0.03, 0.05);
+  if (u < du * 0.9 || len - u < du * 0.9) return setCell(i, CH.bar, 0.32 * sh * t, 0.34 * sh * t, 0.44 * sh * t, 0.03, 0.03, 0.05);
   // neon billboard high on the front face
   if (B.bb && !side && hp > H - 2.3 * FLP && hp < H - 0.5 * FLP) {
     const w = B.bb.length * du, u0 = (len - w) / 2, mid = H - 1.4 * FLP, col = B.bbc;
@@ -1504,16 +1505,16 @@ function shadeTower(i, B, gx, gy, hp, roof) {
     }
   }
   const cu = Math.floor(u / du), fl = Math.floor(hp / FLP), rin = (hp - fl * FLP) / FLP;
-  if (cu % 3 === 0) return setCell(i, CH.bar, 0.34 * sh * t, 0.36 * sh * t, 0.46 * sh * t, 0.035, 0.037, 0.055);
+  if (cu % 3 === 0) return setCell(i, CH.sp, 0, 0, 0, 0, 0, 0);
   if (rin > 0.3 && rin < 0.82 && fl > 0) {
     const hq = hash(B.seed % 100003 + side * 7919 + fl * 131, (cu / 3 | 0) * 17 + 5);
-    if (hq < 0.4) {
-      const wc = hq < 0.05 ? [0.45, 0.6, 1] : hq < 0.08 ? [0.9, 0.5, 1] : [1, 0.72, 0.38], k = (0.55 + hq) * sh;
+    if (hq < 0.18) {
+      const wc = hq < 0.03 ? [0.45, 0.6, 1] : [1, 0.72, 0.38], k = 0.28 * sh;
       return setCell(i, CH.eq, wc[0] * 0.5, wc[1] * 0.5, wc[2] * 0.5, wc[0] * k, wc[1] * k, wc[2] * k);
     }
     return setCell(i, CH.sp, 0, 0, 0, 0, 0, 0);
   }
-  return setCell(i, side ? CH.dot : CH.colon, 0.36 * sh * t, 0.38 * sh * t, 0.5 * sh * t, 0.035 * sh, 0.037 * sh, 0.055 * sh);
+  return setCell(i, (hp / ch | 0) % 2 ? CH.sp : CH.dot, 0.2 * sh * t, 0.21 * sh * t, 0.28 * sh * t, 0, 0, 0);
 }
 // aircraft beacons on the tall towers, drawn per frame
 function drawBeacons() {
@@ -1596,10 +1597,12 @@ function computeCells(c0, r0, c1, r1) {
     isRoad[r * cols + c] = 0; edgeK[r * cols + c] = 0; bDepth[r * cols + c] = -1e9;
     { const j = (r * cols + c) * 3; cellEm[j] = cellEm[j + 1] = cellEm[j + 2] = 0; }
     const i = r * cols + c, sx = (c + 0.5) * cw, sy = (r + 0.5) * ch;
-    if (rayCity(i, sx, sy)) continue;
     const w = s2w(sx, sy), x = w[0], y = w[1];
+    let e = q(x, y);
+    if (e > 2.4 && !mapView && rayCity(i, sx, sy)) continue;
     wx[i] = x; wy[i] = y;
-    const e = q(x, y), lat0 = QL, s0 = QS, r0 = QR, nd = QN;
+    e = q(x, y);
+    const lat0 = QL, s0 = QS, r0 = QR, nd = QN;
     const h = hash(Math.floor(x * 14), Math.floor(y * 14)), h2 = hash(Math.floor(y * 11) + 77, Math.floor(x * 11));
     if (Math.abs(e) < ew) {
       const eT = q(x - vX, y - vY), eB = q(x + vX, y + vY), eL = q(x - hX, y - hY), eR = q(x + hX, y + hY);
@@ -1622,7 +1625,7 @@ function computeCells(c0, r0, c1, r1) {
         }
       }
       if (vnoise(x * 0.3, y * 0.3) > 0.74 && h < 0.3) { setBase(i, CH.tilde, AL.puddle); continue; }
-      if (h < 0.5) {
+      if (h < 0.14) {
         const k = 0.6 + 0.5 * h2;
         tmp[0] = AL.road[0] * k; tmp[1] = AL.road[1] * k; tmp[2] = AL.road[2] * k;
         setBase(i, h < 0.22 ? CH.dot : h < 0.34 ? CH.colon : h < 0.44 ? CH.com : CH.apos, tmp);
@@ -1633,7 +1636,7 @@ function computeCells(c0, r0, c1, r1) {
       // sidewalk: pale paving slabs between the kerb and the city
       isRoad[i] = 1;
       const slab = (s0 % 1.6) < 0.18;
-      setBase(i, slab ? CH.colon : h < 0.5 ? CH.dot : CH.sp, [0.42, 0.42, 0.48]);
+      setBase(i, CH.sp, [0, 0, 0]);
       continue;
     }
     let lot = false;
@@ -1788,7 +1791,7 @@ function glowCell(c, r, col, k, code) {
   if (c < 0 || r < 0 || c >= cols || r >= rows) return;
   const i = r * cols + c;
   if (occlDepth > -1e8 && bDepth[i] > occlDepth + 0.6) return;
-  if (code || chA[i] === CH.sp) { chA[i] = code || CH.dot; albA[i * 3] = albA[i * 3 + 1] = albA[i * 3 + 2] = 0.25; }
+  if (code > 0) { chA[i] = code; albA[i * 3] = albA[i * 3 + 1] = albA[i * 3 + 2] = 0.25; }
   emA[i * 3] += col[0] * k; emA[i * 3 + 1] += col[1] * k; emA[i * 3 + 2] += col[2] * k;
 }
 function put(c, r, code, al, em, emk) {
@@ -1830,7 +1833,7 @@ function drawCar(c) {
   const sxh = (hx - hy) * TWp / 2, syh = (hx + hy) * THp / 2, sn = Math.hypot(sxh, syh) || 1, tow = syh / sn;
   // level of detail: when a car is only a few cells long, draw it as a light line or a single point of light
   const lenCells = c.len * sn / cw;
-  if (lenCells < 6) {
+  if (lenCells < 12) {
     const L = c.len, fx = c.x + hx * L / 2, fy = c.y + hy * L / 2, bx = c.x - hx * L / 2, by = c.y - hy * L / 2;
     const lit_ = c.siren || c.amber, barOn = barColor(c), bar = barOn || [0.2, 0.2, 0.25];
     const haz = c.hazard && blinkOn(c.id, 9);
@@ -1846,8 +1849,8 @@ function drawCar(c) {
         const q2 = cellOfZ(cz, c.x + hx * t, c.y + hy * t), l = cells[cells.length - 1];
         if (!l || l[0] !== q2[0] || l[1] !== q2[1]) cells.push(q2);
       }
-      const bc = bodyChar(sxh, syh), body = [c.col[0] * 1.4 * fade, c.col[1] * 1.4 * fade, c.col[2] * 1.4 * fade];
-      for (let k = 1; k < cells.length - 1; k++) put(cells[k][0], cells[k][1], c.kind === 'bus' ? CH.hash : bc, body, c.col, 0.3 * fade);
+      const body = [c.col[0] * 1.6 * fade, c.col[1] * 1.6 * fade, c.col[2] * 1.6 * fade];
+      for (let k = 1; k < cells.length - 1; k++) put(cells[k][0], cells[k][1], c.kind === 'bus' ? CH.hash : CH.eq, body, c.col, 0.75 * fade);
       const hcl = cells[cells.length - 1], tcl = cells[0];
       put(hcl[0], hcl[1], CH.o, [0.9, 0.9, 0.85], haz ? LC.amber : LC.head, (haz ? 1.4 : 0.6 + 1.1 * Math.max(0, tow)) * fade);
       if (cells.length > 1) put(tcl[0], tcl[1], c.brake ? CH.O : CH.o, [0.8, 0.2, 0.15], haz ? LC.amber : LC.tail, (haz ? 1.4 : c.brake ? 1.6 : 0.65) * fade);
@@ -1875,7 +1878,7 @@ function drawCar(c) {
   // long-exposure taillight streak behind moving cars
   if (c.trail) for (let k = 0; k < c.trail.length; k++) {
     const t_ = c.trail[k], a = (k + 1) / c.trail.length, [tc_, tr_] = cellOfZ(t_[2], t_[0], t_[1]);
-    glowCell(tc_, tr_, LC.tail, 0.55 * a * a * fade);
+    glowCell(tc_, tr_, LC.tail, 0.28 * a * a * fade, -1);
   }
   // lower body
   for (const [cc, rr_] of carSeen.values()) put(cc, rr_, CH.hash, lo, c.col, 0.16 * fade);
@@ -1968,7 +1971,7 @@ let fogImg = null;
 function drawFog() {
   const fw = Math.max(2, Math.ceil(cols / 10)), fh = Math.max(2, Math.ceil(rows / 10));
   if (fogC.width !== fw || fogC.height !== fh || !fogImg) { fogC.width = fw; fogC.height = fh; fogImg = fogX.createImageData(fw, fh); }
-  const d = fogImg.data, k = [0.35, 0.55, 0.7][wi];
+  const d = fogImg.data, k = [0.15, 0.25, 0.32][wi];
   for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) {
     const w = s2w((x + 0.5) * W / fw, (y + 0.5) * H / fh);
     const n = vnoise(w[0] * 0.035 + simT * 0.05, w[1] * 0.035 - simT * 0.02) * 0.65 + vnoise(w[0] * 0.09 - simT * 0.08, w[1] * 0.09) * 0.35;
@@ -2148,12 +2151,12 @@ function frame(now) {
   ctx.drawImage(colorC, 0, 0, cols * cwD, rows * chD);
   ctx.imageSmoothingEnabled = true;
   drawRainSprites();
-  drawFog();
+  if (!mapView) drawFog();
   g2X.clearRect(0, 0, g2C.width, g2C.height); g2X.drawImage(glowC, 0, 0, g2C.width, g2C.height);
   g3X.clearRect(0, 0, g3C.width, g3C.height); g3X.drawImage(g2C, 0, 0, g3C.width, g3C.height);
   ctx.globalCompositeOperation = 'lighter';
-  ctx.globalAlpha = 1; ctx.drawImage(g2C, 0, 0, cols * cwD, rows * chD);
-  ctx.globalAlpha = 0.45; ctx.drawImage(g3C, 0, 0, cols * cwD, rows * chD);
+  ctx.globalAlpha = 0.55; ctx.drawImage(g2C, 0, 0, cols * cwD, rows * chD);
+  ctx.globalAlpha = 0.22; ctx.drawImage(g3C, 0, 0, cols * cwD, rows * chD);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   const fo = flash > 0.02 ? (flash * 0.22).toFixed(3) : '0';
   if (fo !== flashEl.style.opacity) flashEl.style.opacity = fo;
@@ -2309,7 +2312,7 @@ $('bHelpOk').onclick = () => { helpEl.hidden = true; try { localStorage.setItem(
 
 // ================================================================ boot: a small starter network so the city is alive on open
 resizeAll();
-F = clamp(Math.round(W / 65), 5, 8);
+F = clamp(Math.round(W / 56), 6, 9);
 zoomTW = normalTW = F * 0.6 * TILE_COLS;
 resizeCells();
 centerOn(0, 0);
