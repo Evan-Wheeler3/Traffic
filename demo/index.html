@@ -932,6 +932,7 @@ function drawBuilding(p) {
   const sx0 = Math.min(...cs.map(v => v[0])), sx1 = Math.max(...cs.map(v => v[0]));
   const sy0 = Math.min(...cs.map(v => v[1])) - Hp, sy1 = Math.max(...cs.map(v => v[1]));
   if (sx1 < 0 || sx0 > W || sy1 < 0 || sy0 > H) return;
+  if ((sx1 - sx0) / cw < 24) return;   // too small to read: drawPlace shows a compact neon label instead
   const c0 = clamp(Math.floor(sx0 / cw), 0, cols - 1), c1 = clamp(Math.floor(sx1 / cw), 0, cols - 1);
   const r0 = clamp(Math.floor(sy0 / ch), 0, rows - 1), r1 = clamp(Math.floor(sy1 / ch), 0, rows - 1);
   const eu = (cw / hw) * 0.75, ev = ch * 0.55, litP = on ? 0.62 : 0.1;
@@ -972,6 +973,13 @@ function drawPlace(p) {
   const [c, r] = cellOf(p.x, p.y), on = p.connected, col = p.col, B = placeBox(p);
   const fl = p.flick && on && (Math.sin(simT * 9 + p.id * 3) + Math.sin(simT * 23 + p.id)) > 1.45 ? 0.12 : 1;
   const k = (on ? 1 : 0.35) * fl;
+  if ((B.w + B.d) * TWp / 2 / cw < 24) {
+    // far zoom: just the name in neon over its lot
+    drawText(c - (p.name.length >> 1), r - 1, p.name, col, 2.4 * k);
+    poolInto(litA, p.x, p.y, 7, col, (on ? 1.1 : 0.25) * fl);
+    if (!on && Math.sin(simT * 3) > -0.3) put(c, r, C('?'), [0.6, 0.65, 0.75]);
+    return;
+  }
   // neon sign standing on the roof
   const rs = w2s(B.cx, B.cy), Hp = B.floors * Math.max(ch * 2.6, 0.85 * THp);
   const sc = Math.floor(rs[0] / cw), sr = Math.floor((rs[1] - Hp) / ch);
@@ -1381,6 +1389,41 @@ function drawCar(c) {
   if (fade <= 0.02) return;
   const rxv = -hy, ryv = hx;
   const sxh = (hx - hy) * TWp / 2, syh = (hx + hy) * THp / 2, sn = Math.hypot(sxh, syh) || 1, tow = syh / sn;
+  // level of detail: when a car is only a few cells long, draw it as a light line or a single point of light
+  const lenCells = c.len * sn / cw;
+  if (lenCells < 6) {
+    const L = c.len, fx = c.x + hx * L / 2, fy = c.y + hy * L / 2, bx = c.x - hx * L / 2, by = c.y - hy * L / 2;
+    const lit_ = (c.cop && c.siren) || c.amber;
+    const bar = c.amber ? (Math.sin(simT * 10 + c.id) > 0 ? LC.amber : [0.25, 0.12, 0.02]) : Math.sin(simT * 13 + c.id) > 0 ? LC.copR : LC.copB;
+    const haz = c.hazard && blinkOn(c.id, 9);
+    if (lenCells < 2.5) {
+      const m = cellOfZ(cz, c.x, c.y), toward = tow > 0.1;
+      const col = lit_ ? bar : haz ? LC.amber : toward ? LC.head : LC.tail;
+      const k = (lit_ ? 2.4 : haz ? 1.6 : toward ? 0.8 + tow : c.brake ? 1.7 : 0.75) * fade;
+      put(m[0], m[1], !toward && c.brake && !lit_ ? CH.O : CH.o, [col[0] * 0.6, col[1] * 0.6, col[2] * 0.6], col, k);
+      refl.push([m[0], m[1], col, 0.5 * k]);
+    } else {
+      const cells = [];
+      for (let t = -L / 2; t <= L / 2 + 1e-6; t += 0.2) {
+        const q2 = cellOfZ(cz, c.x + hx * t, c.y + hy * t), l = cells[cells.length - 1];
+        if (!l || l[0] !== q2[0] || l[1] !== q2[1]) cells.push(q2);
+      }
+      const bc = bodyChar(sxh, syh), body = [c.col[0] * fade, c.col[1] * fade, c.col[2] * fade];
+      for (let k = 1; k < cells.length - 1; k++) put(cells[k][0], cells[k][1], c.kind === 'bus' ? CH.hash : bc, body, c.col, 0.1 * fade);
+      const hcl = cells[cells.length - 1], tcl = cells[0];
+      put(hcl[0], hcl[1], CH.o, [0.9, 0.9, 0.85], haz ? LC.amber : LC.head, (haz ? 1.4 : 0.6 + 1.1 * Math.max(0, tow)) * fade);
+      if (cells.length > 1) put(tcl[0], tcl[1], c.brake ? CH.O : CH.o, [0.8, 0.2, 0.15], haz ? LC.amber : LC.tail, (haz ? 1.4 : c.brake ? 1.6 : 0.65) * fade);
+      if (lit_) { const m = cells[(cells.length / 2) | 0]; put(m[0], m[1] - 1, CH.eq, [0.6, 0.6, 0.7], bar, 2.2 * fade); }
+      refl.push([hcl[0], hcl[1], LC.head, 0.9 * Math.max(0, tow) * fade]);
+      refl.push([tcl[0], tcl[1], LC.tail, (c.brake ? 0.9 : 0.4) * fade]);
+    }
+    coneInto(litA, fx, fy, hx, hy, 10, LC.head, 1.15 * fade, cz);
+    poolInto(litA, bx - hx * 0.6, by - hy * 0.6, c.brake ? 3 : 2.2, LC.tail, (c.brake ? 0.9 : 0.4) * fade, cz);
+    if (lit_) poolInto(litA, c.x, c.y, 8, bar, 1.1 * fade, cz);
+    if (haz) poolInto(litA, c.x, c.y, 3.5, LC.amber, 0.7, cz);
+    occl = false;
+    return;
+  }
   const L = c.len, Wd = c.kind === 'bus' ? 0.95 : 0.8, st = 0.075;
   const roofUp = Math.max(1, Math.round(0.5 * THp / ch));
   const lo = [c.col[0] * 0.42 * fade, c.col[1] * 0.42 * fade, c.col[2] * 0.42 * fade];
@@ -1639,7 +1682,7 @@ const ptrs = new Map();
 let pinch = null, panning = false;
 function zoomAt(mx, my, f) {
   const [x, y] = s2w(mx, my);
-  const nz = clamp(zoomTW * f, 3, 260);
+  const nz = clamp(zoomTW * f, 9, 260);
   if (Math.abs(nz - zoomTW) < 1e-3) return;
   zoomTW = nz;
   const nF = fontFor(zoomTW), ncw = Math.max(3, Math.round(nF * 0.6 * DPR));
@@ -1655,7 +1698,7 @@ function fitMap() {
   let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
   for (const [x, y] of pts) { u0 = Math.min(u0, x - y); u1 = Math.max(u1, x - y); v0 = Math.min(v0, x + y); v1 = Math.max(v1, x + y); }
   const du = Math.max(4, u1 - u0 + 12), dv = Math.max(4, v1 - v0 + 16);
-  zoomTW = clamp(Math.min(2 * (W - 32) / du, 4 * (H - 230) / dv), 3, 260);
+  zoomTW = clamp(Math.min(2 * (W - 32) / du, 4 * (H - 230) / dv), 9, 260);
   F = fontFor(zoomTW); resizeCells(); setRain();
   const cx = (u0 + u1) / 2, cy = (v0 + v1) / 2, x = (cx + cy) / 2, y = (cy - cx) / 2;
   setCam(W / 2 - (x - y) * TWp / 2, H * 0.47 - (x + y) * THp / 2);
