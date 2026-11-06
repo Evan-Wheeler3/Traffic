@@ -15,6 +15,7 @@
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
 }
+[hidden] { display: none !important; }
 html, body { height: 100%; background: var(--bg); overflow: hidden; overscroll-behavior: none; }
 body { margin: 0; color: var(--ink); font-family: var(--mono); touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
 #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: var(--bg); }
@@ -159,7 +160,7 @@ const glyphX = glyphC.getContext('2d'), colorX = colorC.getContext('2d'), glowX 
 let F = 12, DPR = 1, W = 1, H = 1, VW = 1, VH = 1, cwD = 1, chD = 1, cw = 1, ch = 1, cols = 1, rows = 1, NC = 1, TWp = 1, THp = 1;
 const cam = { ox: 0, oy: 0, tx: 0, ty: 0 };
 let zoomTW = 40, dprCap = 2;   // zoomTW: screen width of one tile (css px)
-let wx, wy, baseCh, baseAlb, baseEm, baseLit, isRoad, deckMask, edgeK, chA, albA, emA, litA, prevCh, colorImg, glowImg;
+let wx, wy, baseCh, baseAlb, baseEm, baseLit, isRoad, deckMask, edgeK, cellEm, bDepth, chA, albA, emA, litA, prevCh, colorImg, glowImg;
 let baseDirty = true;
 
 const atlas = new Map();
@@ -197,7 +198,7 @@ function resizeCells() {
   baseAlb = new Float32Array(NC * 3); albA = new Float32Array(NC * 3);
   baseEm = new Float32Array(NC * 3); emA = new Float32Array(NC * 3);
   baseLit = new Float32Array(NC * 3); litA = new Float32Array(NC * 3);
-  isRoad = new Uint8Array(NC); deckMask = new Uint8Array(NC); edgeK = new Uint8Array(NC);
+  isRoad = new Uint8Array(NC); deckMask = new Uint8Array(NC); edgeK = new Uint8Array(NC); cellEm = new Float32Array(NC * 3); bDepth = new Float32Array(NC).fill(-1e9);
   glyphC.width = cols * cwD; glyphC.height = rows * chD;
   glyphX.fillStyle = '#000'; glyphX.fillRect(0, 0, glyphC.width, glyphC.height);
   colorC.width = cols; colorC.height = rows; colorImg = colorX.createImageData(cols, rows);
@@ -519,12 +520,21 @@ function rebuildNetwork() {
       lamps.push({ x, y, px: p[0] + nx * (HW - 1.2), py: p[1] + ny * (HW - 1.2) });
     }
   }
+  manholes = [];
+  for (const r of roads) for (let u = 6; u < r.len - 4; u += 14) {
+    if (zAtRoad(r, u) > 0.02) continue;
+    const p = pointAt(r, u), a = pointAt(r, u - 0.4), b = pointAt(r, u + 0.4), tx = b[0] - a[0], ty = b[1] - a[1], l = Math.hypot(tx, ty) || 1;
+    const x = p[0] - ty / l * LANE * 0.5, y = p[1] + tx / l * LANE * 0.5;
+    if (jnodes.some(n => Math.hypot(n.x - x, n.y - y) < TRIM3 + 2)) continue;
+    manholes.push([x, y, hash(r.id * 13, u | 0)]);
+  }
   sigHeads = [];
   for (const n of jnodes) for (const l of n.ins) {
     const ex = l.xs[l.n - 1], ey = l.ys[l.n - 1], hx = l.hx[l.n - 1], hy = l.hy[l.n - 1];
     sigHeads.push({ node: n, lane: l, x: ex - hy * (LANE + 1.9), y: ey + hx * (LANE + 1.9), sx: ex, sy: ey });
   }
   assignPlaces();
+  cityCache.clear();
   baseDirty = true;
 }
 function sigState(n, phase) {
@@ -634,6 +644,7 @@ function newCar(path, s, kind) {
   if (c.kind === 'bus') { c.len = 3.4; c.col = [0.3, 0.75, 0.85]; c.v0f *= 0.82; }
   if (c.kind === 'cop') { c.cop = true; c.col = [0.92, 0.94, 1.0]; c.v0f = 1.05; }
   if (c.kind === 'tow') { c.len = 2.5; c.col = [1.0, 0.62, 0.15]; c.v0f = 1.0; }
+  if (c.kind === 'amb') { c.len = 2.3; c.col = [1.0, 0.96, 0.96]; c.v0f = 1.08; }
   if (path.kind === 'conn') path.occ++;
   placeCar(c);
   cars.push(c);
@@ -663,7 +674,7 @@ function indexCars() {
 function blocked(c, lane, conn, rem) {
   if (lane.to.sig && lane.phase != null) {
     const st = sigState(lane.to, lane.phase);
-    if (st === 'r' && !(c.cop && c.siren)) return true;
+    if (st === 'r' && !c.siren) return true;
     if (st === 'y' && rem > (c.v * c.v) / 7 + 0.4) return true;
   }
   if (c.ghost > 0) return false;
@@ -701,7 +712,7 @@ function updateCars(dt) {
     if (c.stopAt != null) { const g = c.stopAt - c.s; if (g > -0.5 && g < gap) { gap = Math.max(0, g); vl = 0; held = true; } }
     const i = Math.min(p.n - 1, Math.round(c.s / p.step));
     let v0 = p.vmax[i] * c.v0f * wx_.vf;
-    if ((c.cop && c.siren) || c.amber) v0 *= 1.25;
+    if (c.siren || c.amber) v0 *= 1.25;
     if (c.goal && c.path === c.goal && c.stopAt == null && !c.released) c.stopAt = c.goalStop;
     for (const inc of incidents) if (inc.car !== c && inc.cop !== c && Math.abs(inc.car.x - c.x) + Math.abs(inc.car.y - c.y) < 10) v0 *= 0.45;
     let acc;
@@ -736,7 +747,13 @@ function updateCars(dt) {
       } else { P.occ--; c.s -= P.len; c.path = P.target; }
     }
     if (c.t0 != null && simT - c.t0 > 180 && !c.crash) c.dead = true;
-    if (!c.dead) placeCar(c);
+    if (!c.dead) {
+      placeCar(c);
+      if (c.v > 2.5) {
+        const tx_ = c.x - c.hx * c.len / 2, ty_ = c.y - c.hy * c.len / 2, tr = c.trail || (c.trail = []), l = tr[tr.length - 1];
+        if (!l || Math.hypot(l[0] - tx_, l[1] - ty_) > 0.35) { tr.push([tx_, ty_, c.z || 0]); if (tr.length > 12) tr.shift(); }
+      } else if (c.trail && c.trail.length) c.trail.shift();
+    }
   }
   for (let k = cars.length - 1; k >= 0; k--) {
     const c = cars[k];
@@ -784,7 +801,7 @@ function dispatch(kind, target, stopS) {
   if (best) { car = newCar(best, bestS, kind); car.routeDist = dist; }
   else { car = newCar(target, Math.max(0, stopS - 18), kind); car.ghost = 99; car.fade = 1; }
   car.responder = true; car.goal = target; car.goalStop = stopS; car.t0 = simT;
-  if (kind === 'cop') car.siren = true; else car.amber = true;
+  if (kind === 'cop' || kind === 'amb') car.siren = true; else car.amber = true;
   return car;
 }
 function release(v) {
@@ -813,15 +830,17 @@ function updateIncidents(dt) {
       inc.copAt = inc.t; inc.cop.ghost = 0;
       for (const d of [3.2, 5, 6.8]) { const s = Math.max(0, c.s - d), i = Math.round(s / c.path.step); inc.flares.push({ x: c.path.xs[i], y: c.path.ys[i], ph: rnd() * 9 }); }
       inc.tow = dispatch('tow', opp, Math.max(0.5, so - 5.5));
+      inc.amb = dispatch('amb', opp, Math.max(0.5, so - 9.5));
     }
     if (inc.towAt == null && atStop(inc.tow)) { inc.towAt = inc.t; inc.tow.ghost = 0; }
     if (inc.cleared == null && ((inc.towAt != null && inc.t > inc.towAt + 4) || inc.t > 50 || c.dead)) {
       inc.cleared = inc.t; c.dead = true; inc.flares.length = 0;
     }
-    if (inc.cleared != null && inc.t > inc.cleared + 1.5) { release(inc.cop); release(inc.tow); }
+    if (inc.cleared != null && inc.t > inc.cleared + 1.5) { release(inc.cop); release(inc.tow); release(inc.amb); }
     if (inc.cleared != null && inc.t > inc.cleared + 9) {
       if (inc.cop) inc.cop.siren = false;
       if (inc.tow) inc.tow.amber = false;
+      if (inc.amb) inc.amb.siren = false;
       incidents.splice(k, 1);
     }
   }
@@ -932,7 +951,7 @@ function spawnPlace() {
     if (places.some(p => Math.hypot(p.x - x, p.y - y) < 13)) continue;
     if (q(x, y) < 7) continue;
     addPlace(name, x, y, places.length, rnd() < 0.3);
-    assignPlaces(); baseDirty = true;
+    assignPlaces(); cityCache.clear(); baseDirty = true;
     toast(`${name} opened · draw a road to its sign`);
     return;
   }
@@ -1141,7 +1160,7 @@ function updateSound() {
     const [sx, sy] = w2s(c.x, c.y);
     if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) continue;
     if (c.v > 2) moving += c.v / 9;
-    if (c.cop && c.siren) siren = true;
+    if (c.siren) siren = true;
   }
   S.hissG.gain.setTargetAtTime(Math.min(0.09, moving * 0.012) * (wi ? 1.2 : 0.7), t, 0.4);
   S.sirenG.gain.setTargetAtTime(siren ? 0.018 : 0, t, 0.3);
@@ -1172,7 +1191,7 @@ function chime(x, y) {
 // ================================================================ follow cam: tap a car
 const cardEl = document.getElementById('card');
 let cardT = 0;
-const KIND = { car: 'car', taxi: 'taxi', bus: 'bus', cop: 'police', tow: 'tow truck' };
+const KIND = { car: 'car', taxi: 'taxi', bus: 'bus', cop: 'police', tow: 'tow truck', amb: 'ambulance' };
 function handleTap(x, y) {
   let best = null, bd = 26;
   for (const c of cars) {
@@ -1197,6 +1216,95 @@ function updateFollow(dt) {
   const mult = c.kind === 'taxi' ? 1.5 : c.kind === 'bus' ? 2.2 : 1;
   const fare = c.dest && c.ideal != null ? ` · fare ~$${Math.round((3 + c.ideal * 0.22) * mult)}` : '';
   cardEl.textContent = `${KIND[c.kind] || c.kind}${c.dest ? ' → ' + c.dest.name : ''}\n${kmh} km/h · ${state}${fare}`;
+}
+
+// ================================================================ city backdrop: procedural towers on a block grid
+const BS = 11;
+const cityCache = new Map();
+const BILL = ['NOODLES', 'HOTEL', 'LIVE', '24/7', 'OPEN', 'RAMEN', 'NEON', 'BAR', 'DISCO', 'SUSHI', 'TAXI', 'PHO', 'CLUB', 'DRUGS', 'SAKE', 'MOTEL'];
+let FLP = 20, CITY_H = 300;
+function cityBlock(bx, by) {
+  const key = bkey(bx, by);
+  let b = cityCache.get(key);
+  if (b !== undefined) return b;
+  b = null;
+  const h1 = hash(bx * 31 + 7, by * 17 + 3), h2 = hash(bx * 13 + 91, by * 29 + 5), h3 = hash(bx + 555, by - 333);
+  if (h1 > 0.1) {
+    const x0 = bx * BS + 1.4 + h2 * 1.4, x1 = (bx + 1) * BS - 1.4 - h3 * 1.4, y0 = by * BS + 1.4 + h3 * 1.2, y1 = (by + 1) * BS - 1.4 - h2 * 1.2;
+    let ok = true;
+    for (let i = 0; i <= 3 && ok; i++) for (let j = 0; j <= 3 && ok; j++) if (q(x0 + (x1 - x0) * i / 3, y0 + (y1 - y0) * j / 3) < 2.2) ok = false;
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    if (ok) for (const pl of places) { const B = pl.box; if (Math.hypot(pl.x - cx, pl.y - cy) < 7.5 || (B && x0 < B.x1 + 1.5 && x1 > B.x0 - 1.5 && y0 < B.y1 + 1.5 && y1 > B.y0 - 1.5)) ok = false; }
+    if (ok) {
+      const floors = 3 + Math.floor(Math.pow(h2, 1.5) * 15);
+      b = { x0, x1, y0, y1, cx, cy, floors, seed: (Math.imul(bx, 73856093) ^ Math.imul(by, 19349663)) >>> 0,
+        bb: h3 < 0.18 && floors > 5 ? BILL[(h1 * 997 | 0) % BILL.length] : null, bbc: NEONS[(h2 * 97 | 0) % NEONS.length], beacon: floors >= 12,
+        tone: 0.8 + h3 * 0.4 };
+    }
+  }
+  cityCache.set(key, b);
+  return b;
+}
+// march from the nearest possible tower point back toward the cell's own ground point; the first solid hit is what this cell shows
+function rayCity(i, sx, sy) {
+  const hw = TWp / 2, hh = THp / 2;
+  let prevB = null, prevIn = false;
+  for (let hp = CITY_H; hp >= 0; hp -= ch) {
+    const a = (sx - cam.ox) / hw, bq = (sy + hp - cam.oy) / hh, gx = (a + bq) / 2, gy = (bq - a) / 2;
+    const B = cityBlock(Math.floor(gx / BS), Math.floor(gy / BS));
+    const inside = !!B && gx >= B.x0 && gx <= B.x1 && gy >= B.y0 && gy <= B.y1;
+    if (inside && B.floors * FLP >= hp) { shadeTower(i, B, gx, gy, hp, prevIn && prevB === B); return true; }
+    prevB = B; prevIn = inside;
+  }
+  return false;
+}
+function setCell(i, code, r, g, b, er, eg, eb) {
+  baseCh[i] = code; baseAlb[i * 3] = r; baseAlb[i * 3 + 1] = g; baseAlb[i * 3 + 2] = b;
+  cellEm[i * 3] = er; cellEm[i * 3 + 1] = eg; cellEm[i * 3 + 2] = eb;
+}
+function shadeTower(i, B, gx, gy, hp, roof) {
+  wx[i] = gx; wy[i] = gy; bDepth[i] = gx + gy;
+  const H = B.floors * FLP, du = cw / (TWp / 2), t = B.tone;
+  if (roof) {
+    const ed = Math.min(gx - B.x0, B.x1 - gx, gy - B.y0, B.y1 - gy);
+    if (ed < 0.3) return setCell(i, CH.dash, 0.8 * t, 0.84 * t, 1.0 * t, 0.1, 0.11, 0.16);
+    const hq = hash(Math.floor(gx * 2.5), Math.floor(gy * 2.5) + 9);
+    if (Math.hypot(gx - B.cx, gy - B.cy) < 1 && B.floors < 12 && (B.seed & 3) === 0) return setCell(i, CH.hash, 0.3, 0.3, 0.36, 0.02, 0.02, 0.03);
+    return setCell(i, hq < 0.18 ? CH.dot : hq < 0.24 ? CH.colon : CH.sp, 0.2 * t, 0.21 * t, 0.27 * t, 0, 0, 0);
+  }
+  const side = (B.x1 - gx) < (B.y1 - gy) ? 1 : 0;
+  const u = side ? gy - B.y0 : gx - B.x0, len = side ? B.y1 - B.y0 : B.x1 - B.x0, sh = side ? 0.55 : 1;
+  if (H - hp < ch * 0.9) return setCell(i, CH.under, 0.85 * sh * t, 0.88 * sh * t, 1.05 * sh * t, 0.1, 0.11, 0.16);
+  if (u < du * 0.9 || len - u < du * 0.9) return setCell(i, CH.bar, 0.8 * sh * t, 0.84 * sh * t, 1.0 * sh * t, 0.1 * sh, 0.11 * sh, 0.16 * sh);
+  // neon billboard high on the front face
+  if (B.bb && !side && hp > H - 2.3 * FLP && hp < H - 0.5 * FLP) {
+    const w = B.bb.length * du, u0 = (len - w) / 2, mid = H - 1.4 * FLP, col = B.bbc;
+    if (u > u0 - du && u < u0 + w + du) {
+      if (Math.abs(hp - mid) < ch * 0.5 && u >= u0 && u < u0 + w) return setCell(i, C(B.bb[Math.floor((u - u0) / du)]), col[0] * 0.4, col[1] * 0.4, col[2] * 0.4, col[0] * 1.5, col[1] * 1.5, col[2] * 1.5);
+      if (Math.abs(hp - mid) < ch * 1.6) return setCell(i, Math.abs(hp - mid) < ch * 0.5 ? CH.bar : CH.dash, col[0] * 0.3, col[1] * 0.3, col[2] * 0.3, col[0] * 0.5, col[1] * 0.5, col[2] * 0.5);
+    }
+  }
+  const cu = Math.floor(u / du), fl = Math.floor(hp / FLP), rin = (hp - fl * FLP) / FLP;
+  if (cu % 3 === 0) return setCell(i, CH.bar, 0.34 * sh * t, 0.36 * sh * t, 0.46 * sh * t, 0.035, 0.037, 0.055);
+  if (rin > 0.3 && rin < 0.82 && fl > 0) {
+    const hq = hash(B.seed % 100003 + side * 7919 + fl * 131, (cu / 3 | 0) * 17 + 5);
+    if (hq < 0.4) {
+      const wc = hq < 0.05 ? [0.45, 0.6, 1] : hq < 0.08 ? [0.9, 0.5, 1] : [1, 0.72, 0.38], k = (0.55 + hq) * sh;
+      return setCell(i, CH.eq, wc[0] * 0.5, wc[1] * 0.5, wc[2] * 0.5, wc[0] * k, wc[1] * k, wc[2] * k);
+    }
+    return setCell(i, CH.sp, 0, 0, 0, 0, 0, 0);
+  }
+  return setCell(i, side ? CH.dot : CH.colon, 0.36 * sh * t, 0.38 * sh * t, 0.5 * sh * t, 0.035 * sh, 0.037 * sh, 0.055 * sh);
+}
+// aircraft beacons on the tall towers, drawn per frame
+function drawBeacons() {
+  if (Math.sin(simT * 2.6) < 0.55) return;
+  for (const B of cityCache.values()) {
+    if (!B || !B.beacon) continue;
+    const s_ = w2s(B.cx, B.cy), r = Math.floor((s_[1] - B.floors * FLP) / ch) - 1, c = Math.floor(s_[0] / cw);
+    if (c < 0 || c >= cols || r < 0 || r >= rows) continue;
+    put(c, r, CH.star, [1, 0.3, 0.3], [1, 0.12, 0.08], 2.6);
+  }
 }
 
 // ================================================================ static base layer (roads, lamps) -> character + light per cell
@@ -1239,7 +1347,7 @@ function shiftBase(dc, dr) {
       }
     }
   };
-  mv(baseCh, 1); mv(baseAlb, 3); mv(isRoad, 1); mv(edgeK, 1); mv(wx, 1); mv(wy, 1); mv(prevCh, 1);
+  mv(baseCh, 1); mv(baseAlb, 3); mv(isRoad, 1); mv(edgeK, 1); mv(cellEm, 3); mv(bDepth, 1); mv(wx, 1); mv(wy, 1); mv(prevCh, 1);
   gscr.width = glyphC.width; gscr.height = glyphC.height;
   gscrX.drawImage(glyphC, 0, 0);
   glyphX.fillStyle = '#000'; glyphX.fillRect(0, 0, glyphC.width, glyphC.height);
@@ -1264,9 +1372,12 @@ function computeCells(c0, r0, c1, r1) {
   const vX = v1[0] - o0[0], vY = v1[1] - o0[1], hX = h1[0] - o0[0], hY = h1[1] - o0[1];
   const ew = baseEw = 1.3 * Math.max(Math.abs(vX) + Math.abs(vY), Math.abs(hX) + Math.abs(hY));
   const tmp = [0, 0, 0], hasDeck = dsegN > 0;
+  FLP = Math.max(ch * 2, 0.55 * THp); CITY_H = 19 * FLP;
   for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-    isRoad[r * cols + c] = 0; edgeK[r * cols + c] = 0;
+    isRoad[r * cols + c] = 0; edgeK[r * cols + c] = 0; bDepth[r * cols + c] = -1e9;
+    { const j = (r * cols + c) * 3; cellEm[j] = cellEm[j + 1] = cellEm[j + 2] = 0; }
     const i = r * cols + c, sx = (c + 0.5) * cw, sy = (r + 0.5) * ch;
+    if (rayCity(i, sx, sy)) continue;
     const w = s2w(sx, sy), x = w[0], y = w[1];
     wx[i] = x; wy[i] = y;
     const e = q(x, y), lat0 = QL, s0 = QS, r0 = QR, nd = QN;
@@ -1277,11 +1388,18 @@ function computeCells(c0, r0, c1, r1) {
     }
     if (e < 0) {
       isRoad[i] = 1;
-      if (Math.abs(lat0) < ew && nd > TRIM3 + 0.6 && (s0 % 3.4) < 1.9) {
+      // zebra crossing on every approach to a junction
+      if (nd > TRIM3 - 1.7 && nd < TRIM3 - 0.45 && Math.abs(lat0) < HW - 0.25) {
+        if (Math.floor((lat0 + 20) * 1.6) % 2 === 0) { setBase(i, CH.eq, [1.5, 1.5, 1.6]); edgeK[i] = 1; continue; }
+      }
+      const al = Math.abs(lat0), LE = HW - 0.5;
+      if (nd > TRIM3 + 0.3 && (al < ew || Math.abs(al - LE) < ew)) {
         q(x - vX, y - vY); const lT = QL, rT = QR; q(x + vX, y + vY); const lB = QL, rB = QR;
         q(x - hX, y - hY); const lL = QL, rL = QR; q(x + hX, y + hY); const lR = QL, rR = QR;
-        if (rT === r0 && rB === r0 && rL === r0 && rR === r0 && Math.min(lT, lB, lL, lR, lat0) < 0 && Math.max(lT, lB, lL, lR, lat0) > 0) {
-          setBase(i, edgeChar(lT, lB, lL, lR), AL.center); edgeK[i] = 2; continue;
+        if (rT === r0 && rB === r0 && rL === r0 && rR === r0) {
+          if (al < ew && Math.min(lT, lB, lL, lR, lat0) < 0 && Math.max(lT, lB, lL, lR, lat0) > 0) { setBase(i, edgeChar(lT, lB, lL, lR), AL.center); edgeK[i] = 2; continue; }
+          const f = v => Math.abs(v) - LE, fT = f(lT), fB = f(lB), fL = f(lL), fR = f(lR), f0 = f(lat0);
+          if (Math.min(fT, fB, fL, fR, f0) < 0 && Math.max(fT, fB, fL, fR, f0) > 0 && (s0 % 2.2) < 1.5) { setBase(i, edgeChar(fT, fB, fL, fR), [1.25, 1.27, 1.4]); continue; }
         }
       }
       if (vnoise(x * 0.3, y * 0.3) > 0.74 && h < 0.3) { setBase(i, CH.tilde, AL.puddle); continue; }
@@ -1290,6 +1408,13 @@ function computeCells(c0, r0, c1, r1) {
         tmp[0] = AL.road[0] * k; tmp[1] = AL.road[1] * k; tmp[2] = AL.road[2] * k;
         setBase(i, h < 0.22 ? CH.dot : h < 0.34 ? CH.colon : h < 0.44 ? CH.com : CH.apos, tmp);
       } else baseCh[i] = CH.sp, baseAlb[i * 3] = baseAlb[i * 3 + 1] = baseAlb[i * 3 + 2] = 0;
+      continue;
+    }
+    if (e < 1.7) {
+      // sidewalk: pale paving slabs between the kerb and the city
+      isRoad[i] = 1;
+      const slab = (s0 % 1.6) < 0.18;
+      setBase(i, slab ? CH.colon : h < 0.5 ? CH.dot : CH.sp, [0.42, 0.42, 0.48]);
       continue;
     }
     let lot = false;
@@ -1314,12 +1439,12 @@ function computeCells(c0, r0, c1, r1) {
   }
 }
 function finishBase() {
-  baseEm.fill(0); baseLit.fill(0);
+  baseEm.set(cellEm); baseLit.fill(0);
   // road outlines and centre lines glow faintly on their own so they read anywhere
   for (let i = 0; i < NC; i++) {
     const k = edgeK[i]; if (!k) continue;
     const j = i * 3;
-    if (k === 1) { baseEm[j] = 0.16; baseEm[j + 1] = 0.17; baseEm[j + 2] = 0.22; } else { baseEm[j] = 0.2; baseEm[j + 1] = 0.13; baseEm[j + 2] = 0.03; }
+    if (k === 1) { baseEm[j] += 0.16; baseEm[j + 1] += 0.17; baseEm[j + 2] += 0.22; } else { baseEm[j] += 0.22; baseEm[j + 1] += 0.15; baseEm[j + 2] += 0.03; }
   }
   // lamps: a tall pole of characters, a little head, and a pool of sodium light
   const poleRows = Math.max(3, Math.round(3.3 * THp / ch));
@@ -1332,6 +1457,16 @@ function finishBase() {
     poolInto(baseLit, L.px, L.py, 7, LC.sodium, 1.05);
     poolInto(baseLit, L.x, L.y, 2.2, LC.sodium, 0.6);
     reflectInto(baseLit, c, r, LC.sodium, 0.9, true);
+    // a visible cone of light under the head, lighting the rain that falls through it
+    for (let k = 1; k <= poleRows + 1; k++) {
+      const wd = Math.floor(k * 0.55 * ch / cw) + 1, fall = 1 - k / (poleRows + 2);
+      for (let dc = -wd; dc <= wd; dc++) {
+        const cc = c + dc, rr_ = hr + k; if (cc < 0 || cc >= cols || rr_ < 0 || rr_ >= rows) continue;
+        const j = (rr_ * cols + cc) * 3, f = fall * (1 - Math.abs(dc) / (wd + 1));
+        baseEm[j] += LC.sodium[0] * 0.05 * f; baseEm[j + 1] += LC.sodium[1] * 0.05 * f; baseEm[j + 2] += LC.sodium[2] * 0.05 * f;
+        baseLit[j] += LC.sodium[0] * 1.6 * f; baseLit[j + 1] += LC.sodium[1] * 1.6 * f; baseLit[j + 2] += LC.sodium[2] * 1.6 * f;
+      }
+    }
   }
   deckMask.fill(0);
   if (dsegN) buildDeck(baseEw);
@@ -1429,17 +1564,33 @@ function reflectInto(buf, c, r, col, I, toBase) {
 }
 
 // ================================================================ dynamic overlay helpers
-let occl = false;
+let occl = false, occlDepth = -1e9;
+function glowCell(c, r, col, k, code) {
+  if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+  const i = r * cols + c;
+  if (occlDepth > -1e8 && bDepth[i] > occlDepth + 0.6) return;
+  if (code || chA[i] === CH.sp) { chA[i] = code || CH.dot; albA[i * 3] = albA[i * 3 + 1] = albA[i * 3 + 2] = 0.25; }
+  emA[i * 3] += col[0] * k; emA[i * 3 + 1] += col[1] * k; emA[i * 3 + 2] += col[2] * k;
+}
 function put(c, r, code, al, em, emk) {
   if (c < 0 || r < 0 || c >= cols || r >= rows) return -1;
   const i = r * cols + c;
   if (occl && deckMask[i]) return -1;
+  if (bDepth[i] > occlDepth + 0.6 && occlDepth > -1e8) return -1;
   chA[i] = code;
   if (al) { albA[i * 3] = al[0]; albA[i * 3 + 1] = al[1]; albA[i * 3 + 2] = al[2]; }
   if (em) { emA[i * 3] += em[0] * emk; emA[i * 3 + 1] += em[1] * emk; emA[i * 3 + 2] += em[2] * emk; }
   return i;
 }
 const blinkOn = (id, rate) => Math.sin(simT * rate + id * 1.7) > 0;
+// double-flash strobe: red, red, then blue (white for ambulances), with dark gaps between
+function barColor(c) {
+  if (c.amber) return Math.sin(simT * 10 + c.id) > 0 ? LC.amber : null;
+  const t = (simT * 1.9 + c.id * 0.37) % 1;
+  if (t < 0.09 || (t > 0.16 && t < 0.25)) return LC.copR;
+  if ((t > 0.5 && t < 0.59) || (t > 0.66 && t < 0.75)) return c.kind === 'amb' ? [1, 1, 1] : LC.copB;
+  return null;
+}
 function bodyChar(sx, sy) {
   const ax = Math.abs(sx), ay = Math.abs(sy) * (cw / ch) * 2;
   if (ay < ax * 0.75) return CH.eq;
@@ -1451,7 +1602,7 @@ const carSeen = new Map();
 function drawCar(c) {
   let hx = c.hx, hy = c.hy;
   const cz = c.z || 0;
-  occl = cz < 0.3;
+  occl = cz < 0.3; occlDepth = c.x + c.y;
   if (c.rot) { const co = Math.cos(c.rot), si = Math.sin(c.rot), nx = hx * co - hy * si; hy = hx * si + hy * co; hx = nx; }
   const sd_ = c.dest && c.dest.stopOn && !c.responder ? c.dest.stopOn.get(c.path) : null;
   const fade = c.fade * (sd_ != null && sd_ >= c.s ? clamp((sd_ - c.s) / 2.5, 0, 1) : c.path.kind === 'lane' && c.path.to.deg < 2 ? clamp((c.path.len - c.s) / 3, 0, 1) : 1);
@@ -1462,8 +1613,7 @@ function drawCar(c) {
   const lenCells = c.len * sn / cw;
   if (lenCells < 6) {
     const L = c.len, fx = c.x + hx * L / 2, fy = c.y + hy * L / 2, bx = c.x - hx * L / 2, by = c.y - hy * L / 2;
-    const lit_ = (c.cop && c.siren) || c.amber;
-    const bar = c.amber ? (Math.sin(simT * 10 + c.id) > 0 ? LC.amber : [0.25, 0.12, 0.02]) : Math.sin(simT * 13 + c.id) > 0 ? LC.copR : LC.copB;
+    const lit_ = c.siren || c.amber, barOn = barColor(c), bar = barOn || [0.2, 0.2, 0.25];
     const haz = c.hazard && blinkOn(c.id, 9);
     if (lenCells < 2.5) {
       const m = cellOfZ(cz, c.x, c.y), toward = tow > 0.1;
@@ -1488,9 +1638,9 @@ function drawCar(c) {
     }
     coneInto(litA, fx, fy, hx, hy, 10, LC.head, 1.15 * fade, cz);
     poolInto(litA, bx - hx * 0.6, by - hy * 0.6, c.brake ? 3 : 2.2, LC.tail, (c.brake ? 0.9 : 0.4) * fade, cz);
-    if (lit_) poolInto(litA, c.x, c.y, 8, bar, 1.1 * fade, cz);
+    if (lit_ && barOn) poolInto(litA, c.x, c.y, 13, barOn, 1.7 * fade, cz);
     if (haz) poolInto(litA, c.x, c.y, 3.5, LC.amber, 0.7, cz);
-    occl = false;
+    occl = false; occlDepth = -1e9;
     return;
   }
   const L = c.len, Wd = c.kind === 'bus' ? 0.95 : 0.8, st = 0.075;
@@ -1503,12 +1653,16 @@ function drawCar(c) {
     const [cc, rr_] = cellOfZ(cz, c.x + hx * u + rxv * v, c.y + hy * u + ryv * v), k = cc * 8192 + rr_;
     if (!carSeen.has(k)) carSeen.set(k, [cc, rr_, u, v]);
   }
+  // long-exposure taillight streak behind moving cars
+  if (c.trail) for (let k = 0; k < c.trail.length; k++) {
+    const t_ = c.trail[k], a = (k + 1) / c.trail.length, [tc_, tr_] = cellOfZ(t_[2], t_[0], t_[1]);
+    glowCell(tc_, tr_, LC.tail, 0.55 * a * a * fade);
+  }
   // lower body
   for (const [cc, rr_] of carSeen.values()) put(cc, rr_, CH.hash, lo, c.col, 0.16 * fade);
   // roof / cabin, lifted a little so the car has height
   const r0 = c.kind === 'bus' ? -L * 0.47 : -L * 0.3, r1 = c.kind === 'bus' ? L * 0.47 : L * 0.22, rv = Wd * 0.38;
-  const lit_ = (c.cop && c.siren) || c.amber;
-  const bar = c.amber ? (Math.sin(simT * 10 + c.id) > 0 ? LC.amber : [0.25, 0.12, 0.02]) : Math.sin(simT * 13 + c.id) > 0 ? LC.copR : LC.copB;
+  const lit_ = c.siren || c.amber, barOn = barColor(c), bar = barOn || [0.2, 0.2, 0.25];
   for (const [cc, rr_, u, v] of carSeen.values()) {
     if (u < r0 || u > r1 || Math.abs(v) > rv) continue;
     const front = u > r1 - L * 0.16, back = u < r0 + L * 0.1;
@@ -1526,6 +1680,8 @@ function drawCar(c) {
     tc = cellOfZ(cz, c.x - hx * L / 2 + rxv * sd * Wd * 0.34, c.y - hy * L / 2 + ryv * sd * Wd * 0.34);
     put(hc[0], hc[1], CH.o, [0.9, 0.9, 0.85], haz ? LC.amber : LC.head, haz ? 1.4 : hk);
     put(tc[0], tc[1], c.brake ? CH.O : CH.o, [0.8, 0.2, 0.15], haz ? LC.amber : LC.tail, haz ? 1.4 : tk);
+    // anamorphic glare across oncoming headlights
+    if (tow > 0.3 && !haz) { const n = Math.round(2 + 5 * tow); for (let d = 1; d <= n; d++) { const f = (1 - d / (n + 1)) * tow * fade; glowCell(hc[0] + sd * d, hc[1], LC.head, 0.7 * f, d <= n - 1 ? CH.dash : 0); } }
   }
   if (haz) poolInto(litA, c.x, c.y, 3.5, LC.amber, 0.7, cz);
   // light cast onto the road
@@ -1534,20 +1690,21 @@ function drawCar(c) {
   poolInto(litA, bx - hx * 0.6, by - hy * 0.6, c.brake ? 3 : 2.2, LC.tail, (c.brake ? 0.9 : 0.4) * fade, cz);
   refl.push([hc[0], hc[1], LC.head, 0.9 * Math.max(0, tow) * fade]);
   refl.push([tc[0], tc[1], LC.tail, (c.brake ? 0.9 : 0.4) * fade]);
-  if (lit_) { poolInto(litA, c.x, c.y, 8, bar, 1.1 * fade, cz); const m = cellOfZ(cz, c.x, c.y); refl.push([m[0], m[1], bar, 1.0 * fade]); }
-  occl = false;
+  if (lit_ && barOn) { poolInto(litA, c.x, c.y, 13, barOn, 1.7 * fade, cz); const m = cellOfZ(cz, c.x, c.y); refl.push([m[0], m[1], bar, 1.0 * fade]); }
+  occl = false; occlDepth = -1e9;
 }
 
 // ================================================================ rain
 let drops = [], splashes = [], flash = 0, flashQ = 0;
 const WIND = 0.1, RAIN_EM = [0.55, 0.65, 1.0];
+let windNow = WIND, windLvl = 2;
 // each drop is one pre-rendered streak of characters, picked by length and by how lit its cell is
 const rainSpr = new Map();
 function rainSprite(len, lvl) {
-  const key = len * 16 + lvl;
+  const key = (windLvl * 16 + len) * 16 + lvl;
   let g = rainSpr.get(key);
   if (g) return g;
-  const sl = WIND * (ch / cw), w = Math.ceil(cwD * (1 + (len - 1) * sl)) + 2;
+  const sl = (windLvl * 0.05) * (ch / cw), w = Math.ceil(cwD * (1 + (len - 1) * sl)) + 2;
   g = mk(w, chD * len);
   const x = g.getContext('2d');
   x.font = `500 ${Math.round(F * DPR)}px ${FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle';
@@ -1571,7 +1728,39 @@ function drawRainSprites() {
   }
   ctx.globalCompositeOperation = 'source-over';
 }
-let bolts = [];
+let bolts = [], manholes = [];
+// steam curling out of manholes along the roads
+function drawSteam() {
+  const pr = Math.max(4, Math.round(1.8 * THp / ch));
+  for (const m of manholes) {
+    const [c, r] = cellOf(m[0], m[1]);
+    if (c < -4 || c > cols + 4 || r < 0 || r > rows + pr) continue;
+    put(c, r, CH.O, [0.32, 0.33, 0.38]);
+    for (let k = 0; k < 4; k++) {
+      const t = (simT * 0.45 + m[2] + k / 4) % 1, rr_ = r - 1 - Math.floor(t * pr), cc = c + Math.round(Math.sin(t * 5 + m[2] * 9 + k) * 1.4 + t * 2);
+      const a = (1 - t) * 0.9;
+      put(cc, rr_, t < 0.35 ? CH.tilde : t < 0.7 ? C('~') : CH.deg, [0.55 * a, 0.58 * a, 0.66 * a], [0.5, 0.55, 0.65], 0.05 * a);
+    }
+  }
+}
+// drifting fog banks: a coarse world-anchored noise layer, upsampled softly over the scene
+const fogC = mk(), fogX = fogC.getContext('2d');
+let fogImg = null;
+function drawFog() {
+  const fw = Math.max(2, Math.ceil(cols / 10)), fh = Math.max(2, Math.ceil(rows / 10));
+  if (fogC.width !== fw || fogC.height !== fh || !fogImg) { fogC.width = fw; fogC.height = fh; fogImg = fogX.createImageData(fw, fh); }
+  const d = fogImg.data, k = [0.35, 0.55, 0.7][wi];
+  for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) {
+    const w = s2w((x + 0.5) * W / fw, (y + 0.5) * H / fh);
+    const n = vnoise(w[0] * 0.035 + simT * 0.05, w[1] * 0.035 - simT * 0.02) * 0.65 + vnoise(w[0] * 0.09 - simT * 0.08, w[1] * 0.09) * 0.35;
+    const f = clamp((n - 0.45) * 2.2, 0, 1) * k, o = (y * fw + x) * 4;
+    d[o] = 70 * f; d[o + 1] = 85 * f; d[o + 2] = 115 * f; d[o + 3] = 255;
+  }
+  fogX.putImageData(fogImg, 0, 0);
+  ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 1;
+  ctx.drawImage(fogC, 0, 0, VW, VH);
+  ctx.globalCompositeOperation = 'source-over';
+}
 // a jagged ASCII lightning bolt from the top of the screen, with a branch or two
 function strike() {
   flash = 1; flashQ = 0.12; thunder();
@@ -1592,8 +1781,10 @@ function setRain() {
   drops.length = target;
 }
 function updateRain(dt) {
+  windNow = clamp(WIND * (1 + 1.1 * Math.sin(simT * 0.21) * Math.sin(simT * 0.067 + 1.3)) * (wi === 2 ? 1.5 : 1), 0, 0.3);
+  windLvl = clamp(Math.round(windNow / 0.05), 0, 6);
   for (const d of drops) {
-    d.r += d.v * dt; d.c += d.v * dt * WIND * (ch / cw);
+    d.r += d.v * dt; d.c += d.v * dt * windNow * (ch / cw);
     if (d.r > rows + 6) { d.r = -1 - rnd() * 8; d.c = rnd() * (cols + 20) - 10; d.v = rr(650, 1050) / ch; }
   }
   let n = NC * WEATHER[wi].rain * 1.0 * dt;
@@ -1690,7 +1881,18 @@ function frame(now) {
   }
   for (const [c, r, col, I] of refl) if (I > 0.02) reflectInto(litA, c, r, col, I, false);
   // rain (lit by whatever light the cell already has)
-  for (const s of splashes) if (s.r < rows && s.c < cols && isRoad[s.r * cols + s.c]) put(s.c, s.r, s.t < 0.1 ? CH.dot : s.t < 0.2 ? CH.o : CH.deg, AL.splash);
+  for (const s of splashes) {
+    if (s.r >= rows || s.c >= cols) continue;
+    const i = s.r * cols + s.c;
+    if (!isRoad[i]) continue;
+    if (baseCh[i] === CH.tilde) {
+      // ripple rings spreading across a puddle
+      const rad = Math.floor(s.t * 14);
+      if (rad === 0) put(s.c, s.r, CH.o, AL.splash); else { put(s.c - rad, s.r, C('('), AL.splash); put(s.c + rad, s.r, C(')'), AL.splash); if (rad > 1) { put(s.c, s.r - 1, CH.dash, AL.splash); put(s.c, s.r + 1, CH.dash, AL.splash); } }
+    } else put(s.c, s.r, s.t < 0.1 ? CH.dot : s.t < 0.2 ? CH.o : CH.deg, AL.splash);
+  }
+  drawSteam();
+  drawBeacons();
   for (const b of bolts) { const on = b.t < 0.08 || (b.t > 0.16 && b.t < 0.3); if (on) for (const [c, r, chr] of b.segs) put(c, r, chr, [1, 1, 1], [0.85, 0.9, 1], 4); }
   drawGameLayer(dt);
 
@@ -1724,6 +1926,7 @@ function frame(now) {
   ctx.drawImage(colorC, 0, 0, cols * cwD, rows * chD);
   ctx.imageSmoothingEnabled = true;
   drawRainSprites();
+  drawFog();
   g2X.clearRect(0, 0, g2C.width, g2C.height); g2X.drawImage(glowC, 0, 0, g2C.width, g2C.height);
   g3X.clearRect(0, 0, g3C.width, g3C.height); g3X.drawImage(g2C, 0, 0, g3C.width, g3C.height);
   ctx.globalCompositeOperation = 'lighter';
@@ -1897,7 +2100,7 @@ if (!load()) {
   commitStroke(line, true);
   for (let k = 0; k < 450; k++) { simT += 1 / 30; updateDemand(1 / 30); updateCars(1 / 30); }
   money = 150; tripsTotal = 0; pays.length = 0; floaters.length = 0;
-  setTimeout(() => toast('connect GAS 24 · drag a road from a sign to another sign'), 900);
+  setTimeout(() => toast('connect GAS 24 · drag a road from it to another building'), 900);
 } else {
   let cx = 0, cy = 0; for (const p of places) { cx += p.x; cy += p.y; }
   centerOn(cx / places.length, cy / places.length);
