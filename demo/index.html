@@ -68,6 +68,12 @@ button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
 .help ol { margin: 0 0 12px; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
 .help b { color: #fff; }
 .help p { margin: 0 0 14px; color: var(--dim); font-size: 11px; }
+.shop-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.shop-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.shop-row > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.shop-row span { color: var(--dim); font-size: 11px; }
+.help .shop-row button { flex: 0 0 auto; min-width: 72px; width: auto; }
+.help .shop-row button:disabled { opacity: 0.4; cursor: default; }
 .help button { width: 100%; border-color: var(--neon); color: var(--neon); }
 .hint { font-size: 10px; color: var(--dim); letter-spacing: 0.14em; text-transform: uppercase; text-align: center; }
 </style>
@@ -81,6 +87,11 @@ button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="card" id="card" hidden></div>
+<div class="help shop" id="shop" role="dialog" aria-labelledby="shopT" hidden>
+  <h2 id="shopT">Upgrades</h2>
+  <div id="shopList" class="shop-list"></div>
+  <button id="bShopClose" type="button">close</button>
+</div>
 <div class="help" id="help" role="dialog" aria-labelledby="helpT" hidden>
   <h2 id="helpT">How to play</h2>
   <ol>
@@ -105,6 +116,7 @@ button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
     <button id="bBridge" type="button" aria-pressed="false">bridge</button>
     <button id="bUndo" type="button">undo</button>
     <button id="bMap" type="button">map</button>
+    <button id="bShop" type="button">upgrades</button>
     <button id="bHelp" type="button" aria-label="How to play">?</button>
     <button id="bMore" type="button" aria-expanded="false" aria-controls="more">more</button>
   </div>
@@ -511,7 +523,7 @@ function rebuildNetwork() {
   lamps = [];
   for (const r of roads) {
     let side = (r.id % 2) ? 1 : -1;
-    for (let u = 4; u < r.len - 2; u += 7, side = -side) {
+    for (let u = 4; u < r.len - 2; u += 7 - UP.lights.lvl * 1.4, side = -side) {
       const p = pointAt(r, u), a = pointAt(r, u - 0.4), b = pointAt(r, u + 0.4);
       const tx = b[0] - a[0], ty = b[1] - a[1], l = Math.hypot(tx, ty) || 1, nx = -ty / l * side, ny = tx / l * side;
       const x = p[0] + nx * (HW + 1.5), y = p[1] + ny * (HW + 1.5);
@@ -520,6 +532,7 @@ function rebuildNetwork() {
       lamps.push({ x, y, px: p[0] + nx * (HW - 1.2), py: p[1] + ny * (HW - 1.2) });
     }
   }
+
   manholes = [];
   for (const r of roads) for (let u = 6; u < r.len - 4; u += 14) {
     if (zAtRoad(r, u) > 0.02) continue;
@@ -533,11 +546,13 @@ function rebuildNetwork() {
     const ex = l.xs[l.n - 1], ey = l.ys[l.n - 1], hx = l.hx[l.n - 1], hy = l.hy[l.n - 1];
     sigHeads.push({ node: n, lane: l, x: ex - hy * (LANE + 1.9), y: ey + hx * (LANE + 1.9), sx: ex, sy: ey });
   }
+  buildWalkers();
   assignPlaces();
   cityCache.clear();
   baseDirty = true;
 }
 function sigState(n, phase) {
+  if (UP.signals.lvl && n.ss) return n.ss.y > 0 ? (phase === n.ss.p ? 'y' : 'r') : (phase === n.ss.p ? 'g' : 'r');
   const t = (simT + n.sig.off) % 20;
   const a = t < 7.5 ? 'g' : t < 9.5 ? 'y' : 'r';
   const b = t < 10 ? 'r' : t < 17.5 ? 'g' : t < 19.5 ? 'y' : 'r';
@@ -711,7 +726,7 @@ function updateCars(dt) {
     }
     if (c.stopAt != null) { const g = c.stopAt - c.s; if (g > -0.5 && g < gap) { gap = Math.max(0, g); vl = 0; held = true; } }
     const i = Math.min(p.n - 1, Math.round(c.s / p.step));
-    let v0 = p.vmax[i] * c.v0f * wx_.vf;
+    let v0 = p.vmax[i] * c.v0f * wx_.vf * (1 + 0.12 * UP.speed.lvl);
     if (c.siren || c.amber) v0 *= 1.25;
     if (c.goal && c.path === c.goal && c.stopAt == null && !c.released) c.stopAt = c.goalStop;
     for (const inc of incidents) if (inc.car !== c && inc.cop !== c && Math.abs(inc.car.x - c.x) + Math.abs(inc.car.y - c.y) < 10) v0 *= 0.45;
@@ -800,7 +815,7 @@ function dispatch(kind, target, stopS) {
   let car;
   if (best) { car = newCar(best, bestS, kind); car.routeDist = dist; }
   else { car = newCar(target, Math.max(0, stopS - 18), kind); car.ghost = 99; car.fade = 1; }
-  car.responder = true; car.goal = target; car.goalStop = stopS; car.t0 = simT;
+  car.responder = true; car.goal = target; car.goalStop = stopS; car.t0 = simT; car.v0f *= 1 + 0.2 * UP.response.lvl;
   if (kind === 'cop' || kind === 'amb') car.siren = true; else car.amber = true;
   return car;
 }
@@ -825,7 +840,7 @@ function updateIncidents(dt) {
     const inc = incidents[k], c = inc.car;
     inc.t += dt;
     const opp = c.path.opp, so = opp ? opp.len - c.s : 0;
-    if (!inc.cop && inc.t > 1.5 && opp && !c.dead) inc.cop = dispatch('cop', opp, Math.max(0.5, so - 1.5));
+    if (!inc.cop && inc.t > 1.5 - 0.6 * UP.response.lvl && opp && !c.dead) inc.cop = dispatch('cop', opp, Math.max(0.5, so - 1.5));
     if (inc.copAt == null && atStop(inc.cop)) {
       inc.copAt = inc.t; inc.cop.ghost = 0;
       for (const d of [3.2, 5, 6.8]) { const s = Math.max(0, c.s - d), i = Math.round(s / c.path.step); inc.flares.push({ x: c.path.xs[i], y: c.path.ys[i], ph: rnd() * 9 }); }
@@ -833,7 +848,7 @@ function updateIncidents(dt) {
       inc.amb = dispatch('amb', opp, Math.max(0.5, so - 9.5));
     }
     if (inc.towAt == null && atStop(inc.tow)) { inc.towAt = inc.t; inc.tow.ghost = 0; }
-    if (inc.cleared == null && ((inc.towAt != null && inc.t > inc.towAt + 4) || inc.t > 50 || c.dead)) {
+    if (inc.cleared == null && ((inc.towAt != null && inc.t > inc.towAt + 4 - 1.3 * UP.response.lvl) || inc.t > 50 || c.dead)) {
       inc.cleared = inc.t; c.dead = true; inc.flares.length = 0;
     }
     if (inc.cleared != null && inc.t > inc.cleared + 1.5) { release(inc.cop); release(inc.tow); release(inc.amb); }
@@ -910,7 +925,7 @@ function nearPlace(x, y) {
 function updateDemand(dt) {
   for (const p of places) {
     if (!p.connected) continue;
-    p.demand = Math.min(5, p.demand + dt * 0.28 * TRAFFIC[ti].k);
+    p.demand = Math.min(6, p.demand + dt * 0.28 * TRAFFIC[ti].k * rushK());
     if (p.demand < 1 || cars.length > 200) continue;
     const dests = places.filter(o => o !== p && o.connected && p.stops.some(st => costFrom(st, o) < Infinity));
     if (!dests.length) continue;
@@ -962,7 +977,7 @@ function toast(msg) { toastEl.textContent = msg; toastEl.style.opacity = 1; toas
 function save() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
-      v: 1, t: Date.now(), money: Math.floor(money), trips: tripsTotal, rate: incomeRate(), np: nextPlace,
+      v: 1, t: Date.now(), money: Math.floor(money), trips: tripsTotal, rate: incomeRate(), np: nextPlace, clock: clockMin, up: Object.fromEntries(Object.entries(UP).map(([k, u]) => [k, u.lvl])),
       roads: roads.map(r => ({ c: r.closed ? 1 : 0, k: r.cost || 0, z: r.z ? Array.from(r.z, v => Math.round(v * 100) / 100) : null, p: r.pts.map(q_ => [Math.round(q_[0] * 100) / 100, Math.round(q_[1] * 100) / 100]) })),
       places: places.map(p => ({ n: p.name, x: p.x, y: p.y, c: p.ci, f: p.flick ? 1 : 0, b: p.bdir }))
     }));
@@ -975,6 +990,8 @@ function load() {
   for (const p of d.places) { const pl = addPlace(p.n, p.x, p.y, p.c, p.f); if (p.b != null) pl.bdir = p.b; }
   roads = d.roads.filter(r => Array.isArray(r.p) && r.p.length > 1).map(r => ({ id: ++roadId, pts: r.p, closed: !!r.c, cost: r.k || 0, z: Array.isArray(r.z) && r.z.length === r.p.length ? Float32Array.from(r.z) : null }));
   money = +d.money || 0; tripsTotal = d.trips || 0; nextPlace = d.np || 40;
+  if (typeof d.clock === 'number') clockMin = d.clock;
+  if (d.up) for (const k in UP) UP[k].lvl = clamp(d.up[k] | 0, 0, UP[k].cost.length);
   rebuildNetwork();
   const away = Math.min(8 * 3600, Math.max(0, (Date.now() - (d.t || Date.now())) / 1000));
   if (away > 60 && d.rate > 0) { const gain = Math.round(away * d.rate * 0.5); money += gain; setTimeout(() => toast(`while you were away · +$${gain}`), 700); }
@@ -986,36 +1003,45 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) save(
 // ---- drawing the game layer into the character grid
 // each destination is a small isometric building behind its parking lot
 const BDIRS = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+const placeKind = p => p.name === 'GAS 24' ? 'gas' : p.name === 'MOTEL' ? 'motel' : p.name === 'DINER' ? 'diner' : 'shop';
+const bLvl = () => Math.max(ch * 2.6, 0.85 * THp);
 function placeBox(p) {
   if (p.box) return p.box;
+  const kind = placeKind(p);
   const h1 = hash(p.ci * 17 + 5, p.name.length * 31), h2 = hash(p.name.charCodeAt(0), p.ci * 7 + 1);
-  const w = 4.0 + Math.floor(h1 * 3) * 0.6, d = 3.0 + Math.floor(h2 * 3) * 0.4, floors = 3 + Math.floor(h1 * 7 % 2);
+  let w = 4.0 + Math.floor(h1 * 3) * 0.6, d = 3.0 + Math.floor(h2 * 3) * 0.4, floors = 3 + Math.floor(h1 * 7 % 2), gap = 2.8;
+  if (kind === 'gas') { w = 2.6; d = 2.2; floors = 1; gap = 5.4; }
+  if (kind === 'motel') { w = 7.6; d = 2.6; floors = 2; }
+  if (kind === 'diner') { w = 5.4; d = 3.2; floors = 1; }
   if (p.bdir == null) {
     let bv = -Infinity;
     BDIRS.forEach(([dx, dy], k) => {
-      const cx = p.x + dx * (w / 2 + 2.8), cy = p.y + dy * (d / 2 + 2.8);
+      const cx = p.x + dx * (w / 2 + gap), cy = p.y + dy * (d / 2 + gap);
       const e = Math.min(q(cx, cy), 5) + (k === 0 ? 1.5 : 0);
       if (e > bv) { bv = e; p.bdir = k; }
     });
   }
   const [dx, dy] = BDIRS[p.bdir];
-  const cx = p.x + dx * (w / 2 + 2.8), cy = p.y + dy * (d / 2 + 2.8);
-  p.box = { x0: cx - w / 2, x1: cx + w / 2, y0: cy - d / 2, y1: cy + d / 2, cx, cy, w, d, floors };
+  const cx = p.x + dx * (w / 2 + gap), cy = p.y + dy * (d / 2 + gap);
+  p.box = { x0: cx - w / 2, x1: cx + w / 2, y0: cy - d / 2, y1: cy + d / 2, cx, cy, w, d, floors, kind };
+  if (kind === 'gas') { const kx = p.x + dx * 2.3, ky = p.y + dy * 2.0; p.box.canopy = { x0: kx - 2.6, x1: kx + 2.6, y0: ky - 1.9, y1: ky + 1.9, cx: kx, cy: ky }; }
   return p.box;
 }
 const bKey = p => { const B = placeBox(p); return B.cx + B.cy; };
-function drawBuilding(p) {
-  const B = placeBox(p), on = p.connected, col = p.col;
-  const lvl = Math.max(ch * 2.6, 0.85 * THp), Hp = B.floors * lvl, hw = TWp / 2, hh = THp / 2;
-  const cs = [[B.x0, B.y0], [B.x1, B.y0], [B.x0, B.y1], [B.x1, B.y1]].map(([x, y]) => w2s(x, y));
+function boxBounds(x0, y0, x1, y1, Hp) {
+  const cs = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].map(([x, y]) => w2s(x, y));
   const sx0 = Math.min(...cs.map(v => v[0])), sx1 = Math.max(...cs.map(v => v[0]));
   const sy0 = Math.min(...cs.map(v => v[1])) - Hp, sy1 = Math.max(...cs.map(v => v[1]));
-  if (sx1 < 0 || sx0 > W || sy1 < 0 || sy0 > H) return;
-  if ((sx1 - sx0) / cw < 24) return;   // too small to read: drawPlace shows a compact neon label instead
-  const c0 = clamp(Math.floor(sx0 / cw), 0, cols - 1), c1 = clamp(Math.floor(sx1 / cw), 0, cols - 1);
-  const r0 = clamp(Math.floor(sy0 / ch), 0, rows - 1), r1 = clamp(Math.floor(sy1 / ch), 0, rows - 1);
+  return { sx0, sx1, sy0, sy1, c0: clamp(Math.floor(sx0 / cw), 0, cols - 1), c1: clamp(Math.floor(sx1 / cw), 0, cols - 1), r0: clamp(Math.floor(sy0 / ch), 0, rows - 1), r1: clamp(Math.floor(sy1 / ch), 0, rows - 1) };
+}
+function drawBuilding(p) {
+  const B = placeBox(p), on = p.connected, col = p.col, kind = B.kind;
+  const lvl = bLvl(), Hp = B.floors * lvl, hw = TWp / 2, hh = THp / 2;
+  const bb = boxBounds(B.x0, B.y0, B.x1, B.y1, Hp);
+  if (bb.sx1 < 0 || bb.sx0 > W || bb.sy1 < 0 || bb.sy0 > H) return;
+  if ((B.w + B.d) * TWp / 2 / cw < 24) return;   // too small to read: drawPlace shows a compact neon label instead
+  occl = false; occlDepth = -1e9;
   const eu = (cw / hw) * 0.75, ev = ch * 0.55, litP = on ? 0.62 : 0.1;
-  // solid, self-lit block: '#' front wall, '|' siding on the side wall, '=' roof, bright outline, [] windows
   const tintK = on ? 1 : 0.35;
   const wallEm = [0.10 + col[0] * 0.10 * tintK, 0.11 + col[1] * 0.10 * tintK, 0.15 + col[2] * 0.10 * tintK];
   const OUT = [1, 1, 1.15];
@@ -1024,6 +1050,20 @@ function drawBuilding(p) {
     if (hpx > Hp - ev || hpx < ev * 0.8 || u < eu || len - u < eu) return put(c, r, hpx > Hp - ev ? CH.dash : hpx < ev * 0.8 ? CH.under : CH.bar, [0.6, 0.6, 0.7], OUT, side ? 0.55 : 0.85);
     const cu = Math.floor(u * hw / cw), fl = Math.floor(hpx / lvl), rowInFloor = Math.floor((hpx - fl * lvl) / ch);
     const inner = len - u > eu * 2.5 && u > eu * 2.5;
+    if (kind === 'motel' && !side && inner) {
+      // numbered room doors on both floors, a walkway railing along the upper floor
+      if (fl === 1 && rowInFloor === 0) return put(c, r, CH.eq, [0.7, 0.7, 0.8], OUT, 0.4);
+      if (rowInFloor === 1 || rowInFloor === 2) {
+        const unit = cu % 6, room = (cu / 6 | 0) + 1 + fl * 10, lit = hash(room * 7, p.ci) < (on ? 0.7 : 0.1);
+        if (unit === 1) return put(c, r, rowInFloor === 1 ? C('[') : CH.bar, [0.6, 0.5, 0.4], lit ? [1, 0.75, 0.4] : null, 0.9);
+        if (unit === 2) return put(c, r, rowInFloor === 1 ? C(String(room % 10)) : CH.sp, [0.9, 0.8, 0.5], lit ? [1, 0.82, 0.45] : [0.1, 0.1, 0.12], 1.2);
+        if (unit === 3) return put(c, r, rowInFloor === 1 ? C(']') : CH.bar, [0.6, 0.5, 0.4], lit ? [1, 0.75, 0.4] : null, 0.9);
+      }
+    }
+    if (kind === 'diner' && !side && inner && rowInFloor >= 1) {
+      // one long glass storefront, warm inside
+      return put(c, r, cu % 6 === 0 ? CH.bar : CH.eq, [0.8, 0.7, 0.55], cu % 6 === 0 ? OUT : [1, 0.8, 0.5], on ? (cu % 6 === 0 ? 0.5 : 1.3) : 0.15);
+    }
     if (fl === 0 && inner && rowInFloor >= 1 && cu % 5 !== 0) return put(c, r, CH.eq, [col[0] * 0.4, col[1] * 0.4, col[2] * 0.4], col, on ? 1.4 : 0.15);
     if (fl > 0 && inner && rowInFloor === 1 && (cu % 4 === 1 || cu % 4 === 2)) {
       const hh_ = hash(p.ci * 97 + side * 13 + (cu >> 2) * 5, fl * 11 + 3), lit = hh_ < litP;
@@ -1032,7 +1072,7 @@ function drawBuilding(p) {
     }
     return put(c, r, side ? CH.bar : CH.hash, [0.42 * shade, 0.44 * shade, 0.54 * shade], wallEm, shade);
   };
-  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+  for (let r = bb.r0; r <= bb.r1; r++) for (let c = bb.c0; c <= bb.c1; c++) {
     const sx = (c + 0.5) * cw, sy = (r + 0.5) * ch;
     const rw = s2w(sx, sy + Hp);
     if (rw[0] >= B.x0 && rw[0] <= B.x1 && rw[1] >= B.y0 && rw[1] <= B.y1) {
@@ -1046,23 +1086,34 @@ function drawBuilding(p) {
     const y = B.x1 - (sx - cam.ox) / hw;
     if (y >= B.y0 && y <= B.y1) { const hpx = (B.x1 + y) * hh + cam.oy - sy; if (hpx >= 0 && hpx <= Hp) face(1, y - B.y0, hpx, B.d, c, r); }
   }
+  if (B.canopy) drawCanopy(p, B);
 }
-function drawPlace(p) {
-  const [c, r] = cellOf(p.x, p.y), on = p.connected, col = p.col, B = placeBox(p);
-  const fl = p.flick && on && (Math.sin(simT * 9 + p.id * 3) + Math.sin(simT * 23 + p.id)) > 1.45 ? 0.12 : 1;
-  const k = (on ? 1 : 0.35) * fl;
-  if ((B.w + B.d) * TWp / 2 / cw < 24) {
-    // far zoom: just the name in neon over its lot
-    drawText(c - (p.name.length >> 1), r - 1, p.name, col, 2.4 * k);
-    poolInto(litA, p.x, p.y, 7, col, (on ? 1.1 : 0.25) * fl);
-    if (!on && Math.sin(simT * 3) > -0.3) put(c, r, C('?'), [0.6, 0.65, 0.75]);
-    return;
+// gas station: a bright canopy on four posts over two pumps
+function drawCanopy(p, B) {
+  const K = B.canopy, on = p.connected, col = p.col, Hc = bLvl() * 1.25, hw = TWp / 2;
+  const pumpRows = Math.max(2, Math.round(Hc * 0.45 / ch));
+  for (const t of [-0.22, 0.22]) {
+    const [c, r] = cellOf(K.cx + (K.x1 - K.x0) * t, K.cy);
+    for (let k = 0; k < pumpRows; k++) put(c, r - k, CH.hash, [0.9, 0.25, 0.22], [0.5, 0.08, 0.06], 0.4);
+    put(c, r - pumpRows, CH.eq, [0.4, 0.9, 0.6], [0.3, 1, 0.55], on ? 1.4 : 0.2);
   }
-  // neon sign standing on the roof
-  const rs = w2s(B.cx, B.cy), Hp = B.floors * Math.max(ch * 2.6, 0.85 * THp);
-  const sc = Math.floor(rs[0] / cw), sr = Math.floor((rs[1] - Hp) / ch);
-  const txt = ' ' + p.name + ' ', w = txt.length + 2, left = sc - (w >> 1), top = sr - 4;
-  const dimA = [col[0] * 0.3, col[1] * 0.3, col[2] * 0.3];
+  for (const [x, y] of [[K.x0 + 0.3, K.y0 + 0.3], [K.x1 - 0.3, K.y0 + 0.3], [K.x0 + 0.3, K.y1 - 0.3], [K.x1 - 0.3, K.y1 - 0.3]]) {
+    const [c, r] = cellOf(x, y), top = r - Math.round(Hc / ch);
+    for (let rr_ = top; rr_ <= r; rr_++) put(c, rr_, CH.bar, [0.75, 0.78, 0.86], [0.3, 0.3, 0.35], 0.3);
+  }
+  const bb = boxBounds(K.x0, K.y0, K.x1, K.y1, Hc), eu = (cw / hw) * 1.2;
+  for (let r = bb.r0; r <= bb.r1; r++) for (let c = bb.c0; c <= bb.c1; c++) {
+    const g = s2w((c + 0.5) * cw, (r + 0.5) * ch + Hc);
+    if (g[0] < K.x0 || g[0] > K.x1 || g[1] < K.y0 || g[1] > K.y1) continue;
+    const ed = Math.min(g[0] - K.x0, K.x1 - g[0], g[1] - K.y0, K.y1 - g[1]);
+    if (ed < eu) put(c, r, CH.eq, [col[0] * 0.5, col[1] * 0.5, col[2] * 0.5], col, on ? 1.6 : 0.25);
+    else put(c, r, CH.dash, [0.85, 0.88, 0.95], [0.6, 0.62, 0.7], on ? 0.5 : 0.1);
+  }
+  poolInto(litA, K.cx, K.cy, 6, [1, 1, 0.95], on ? 1.6 : 0.3);
+}
+// a framed neon box sign with legs, used by most places
+function boxSign(p, sc, top, text, col, k) {
+  const txt = ' ' + text + ' ', w = txt.length + 2, left = sc - (w >> 1), dimA = [col[0] * 0.3, col[1] * 0.3, col[2] * 0.3];
   put(left + 2, top + 3, CH.bar, AL.pole); put(left + w - 3, top + 3, CH.bar, AL.pole);
   for (let j = 0; j < w; j++) {
     const edge = j === 0 || j === w - 1;
@@ -1070,12 +1121,52 @@ function drawPlace(p) {
     put(left + j, top + 2, edge ? CH.apos : CH.dash, dimA, col, 1.0 * k);
     put(left + j, top + 1, edge ? CH.bar : C(txt[j - 1]), dimA, col, (edge ? 1.1 : 2.6) * k);
   }
+  return { left, w };
+}
+function drawPlace(p) {
+  const [c, r] = cellOf(p.x, p.y), on = p.connected, col = p.col, B = placeBox(p);
+  occl = false; occlDepth = -1e9;
+  const fl = p.flick && on && (Math.sin(simT * 9 + p.id * 3) + Math.sin(simT * 23 + p.id)) > 1.45 ? 0.12 : 1;
+  const k = (on ? 1 : 0.35) * fl;
+  if ((B.w + B.d) * TWp / 2 / cw < 24) {
+    drawText(c - (p.name.length >> 1), r - 1, p.name, col, 2.4 * k);
+    poolInto(litA, p.x, p.y, 7, col, (on ? 1.1 : 0.25) * fl);
+    if (!on && Math.sin(simT * 3) > -0.3) put(c, r, C('?'), [0.6, 0.65, 0.75]);
+    return;
+  }
+  const rs = w2s(B.cx, B.cy), Hp = B.floors * bLvl();
+  const sc = Math.floor(rs[0] / cw), sr = Math.floor((rs[1] - Hp) / ch);
+  let left = sc, w = 0;
+  if (B.kind === 'diner') {
+    // round marquee sign ringed with chasing bulbs
+    const rx = Math.max(6, (p.name.length >> 1) + 4), ry = 3, cy0 = sr - 5, n = 26;
+    for (let j = 0; j < n; j++) {
+      const a = j / n * TAU, bc = sc + Math.round(Math.cos(a) * rx), br = cy0 + Math.round(Math.sin(a) * ry);
+      const lit = on && (j + Math.floor(simT * 9)) % 3 === 0;
+      put(bc, br, lit ? CH.star : CH.o, [1, 0.85, 0.5], [1, 0.8, 0.4], lit ? 2.2 : on ? 0.5 : 0.12);
+    }
+    drawText(sc - (p.name.length >> 1), cy0, p.name, col, 2.6 * k);
+    put(sc, cy0 + ry + 1, CH.bar, AL.pole); put(sc, cy0 + ry + 2, CH.bar, AL.pole);
+    left = sc - rx; w = rx * 2;
+  } else if (B.kind === 'motel' || B.kind === 'gas') {
+    // tall roadside pole sign at the lot corner
+    const pr = Math.max(6, Math.round(4.2 * THp / ch)), pc = c + 4, top = r - pr - 3;
+    for (let j = 0; j < pr; j++) put(pc, r - j, CH.bar, AL.pole);
+    const sg = boxSign(p, pc, top, p.name, col, k);
+    left = sg.left; w = sg.w;
+    if (B.kind === 'motel') {
+      const vac = on && Math.sin(simT * 2.2) > -0.2, msg = vac ? 'VACANCY' : 'NO VACANCY';
+      drawText(pc - (msg.length >> 1), top + 4, msg, vac ? [1, 0.2, 0.15] : [0.5, 0.15, 0.12], vac ? 2.2 : 0.6);
+    } else drawText(pc - 2, top + 4, '3.49', [0.3, 1, 0.55], on ? 2.2 : 0.4);
+  } else {
+    const sg = boxSign(p, sc, sr - 4, p.name, col, k); left = sg.left; w = sg.w;
+  }
   poolInto(litA, p.x, p.y, 7, col, (on ? 1.1 : 0.25) * fl);
   poolInto(litA, B.cx, B.cy, Math.max(B.w, B.d) * 0.9, col, (on ? 0.5 : 0.1) * fl);
   refl.push([c, r, col, (on ? 0.9 : 0.25) * fl]);
   if (!on) {
     if (Math.sin(simT * 3) > -0.3) { const msg = p.stops && p.stops.length ? '[ link to another building ]' : '[ connect a road here ]'; drawText(c - (msg.length >> 1), r + 1, msg, [0.75, 0.85, 1], 1.1); }
-  } else for (let j = 0; j < Math.min(5, Math.floor(p.demand)); j++) put(left + w + 1 + j, top + 1, CH.dot, [0.7, 0.7, 0.7], col, 0.6);
+  }
 }
 function drawText(c0, r0, text, col, k) { for (let j = 0; j < text.length; j++) put(c0 + j, r0, C(text[j]), [col[0] * 0.3, col[1] * 0.3, col[2] * 0.3], col, k); }
 function drawGameLayer(dt) {
@@ -1216,6 +1307,134 @@ function updateFollow(dt) {
   const mult = c.kind === 'taxi' ? 1.5 : c.kind === 'bus' ? 2.2 : 1;
   const fare = c.dest && c.ideal != null ? ` · fare ~$${Math.round((3 + c.ideal * 0.22) * mult)}` : '';
   cardEl.textContent = `${KIND[c.kind] || c.kind}${c.dest ? ' → ' + c.dest.name : ''}\n${kmh} km/h · ${state}${fare}`;
+}
+
+// ================================================================ time of day: long nights, quick days, rush hours
+let clockMin = 21 * 60;                       // minutes since midnight
+const PAL = [ // hour, ambient rgb, street-lamp strength
+  [0, [0.25, 0.29, 0.42], 1], [4.8, [0.25, 0.29, 0.42], 1], [6.2, [0.58, 0.4, 0.5], 0.55], [7.6, [0.86, 0.86, 0.92], 0],
+  [16.6, [0.86, 0.86, 0.92], 0], [18.2, [0.66, 0.4, 0.4], 0.6], [19.6, [0.32, 0.3, 0.46], 0.95], [24, [0.25, 0.29, 0.42], 1]
+];
+function clockRate(h) { return h >= 20 || h < 5 ? 0.9 : h < 8 ? 2 : h < 17 ? 4.5 : 1.2; }   // game minutes per real second
+function palette() {
+  const h = clockMin / 60;
+  for (let k = 0; k < PAL.length - 1; k++) {
+    const a = PAL[k], b = PAL[k + 1];
+    if (h >= a[0] && h <= b[0]) {
+      const t = (h - a[0]) / (b[0] - a[0] || 1), m = (u, v) => u + (v - u) * t;
+      return { amb: [m(a[1][0], b[1][0]), m(a[1][1], b[1][1]), m(a[1][2], b[1][2])], lamp: m(a[2], b[2]) };
+    }
+  }
+  return { amb: PAL[0][1], lamp: 1 };
+}
+const bump = (h, a, b) => (h >= a && h <= b) ? Math.sin((h - a) / (b - a) * Math.PI) : 0;
+function rushK() { const h = clockMin / 60; return 1 + 1.6 * bump(h, 1.8, 3.2) + 0.9 * bump(h, 7.5, 9.5) + 0.9 * bump(h, 16.8, 18.8); }
+let lastHour = -1;
+function updateClock(dt) {
+  clockMin = (clockMin + clockRate(clockMin / 60) * dt) % 1440;
+  const h = Math.floor(clockMin / 60);
+  if (h !== lastHour) {
+    if (lastHour >= 0) {
+      if (h === 2) toast('2 AM · the bars are closing · rush incoming');
+      if (h === 8) toast('8 AM · morning rush');
+      if (h === 17) toast('5 PM · evening rush');
+      if (h === 20) toast('night falls');
+    }
+    lastHour = h;
+  }
+}
+const clockStr = () => { const m = Math.floor(clockMin), hh = Math.floor(m / 60), mm = m % 60; return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`; };
+
+// ================================================================ pedestrians: umbrellas on the sidewalks and at the crossings
+let walkers = [], crossers = [], crosswalks = [];
+const UMB = [[1, 0.3, 0.45], [0.3, 0.8, 1], [1, 0.85, 0.3], [0.6, 0.45, 1], [0.95, 0.95, 1], [0.35, 1, 0.6]];
+function buildWalkers() {
+  walkers = []; crosswalks = []; crossers = [];
+  for (const r of roads) {
+    if (r.z) continue;
+    const n = Math.min(6, Math.floor(r.len / 13));
+    for (let k = 0; k < n; k++) walkers.push({ r, s: rnd() * r.len, side: rnd() < 0.5 ? -1 : 1, v: rr(0.6, 1.1) * (rnd() < 0.5 ? -1 : 1), col: pick(UMB) });
+  }
+  for (const s_ of sigHeads) {
+    const l = s_.lane, ex = l.xs[l.n - 1], ey = l.ys[l.n - 1], hx = l.hx[l.n - 1], hy = l.hy[l.n - 1], nx = -hy, ny = hx;
+    const cx = ex + hx * 1.1 - nx * LANE, cy = ey + hy * 1.1 - ny * LANE, R = HW + 0.9;
+    crosswalks.push({ node: s_.node, lane: l, a: [cx - nx * R, cy - ny * R], b: [cx + nx * R, cy + ny * R] });
+  }
+}
+function updatePeds(dt) {
+  for (const w of walkers) {
+    w.s += w.v * dt;
+    if (w.s < 2 || w.s > w.r.len - 2) { w.v = -w.v; w.s = clamp(w.s, 2, w.r.len - 2); }
+  }
+  for (const cw_ of crosswalks) {
+    if (sigState(cw_.node, cw_.lane.phase) !== 'r' || crossers.length > 40) continue;
+    if (rnd() < dt * 0.35 && crossers.filter(c => c.cw === cw_).length < 3) crossers.push({ cw: cw_, t: 0, dir: rnd() < 0.5, v: rr(0.08, 0.13), col: pick(UMB) });
+  }
+  for (let k = crossers.length - 1; k >= 0; k--) { crossers[k].t += crossers[k].v * dt; if (crossers[k].t >= 1) crossers.splice(k, 1); }
+}
+function drawPed(x, y, col) {
+  const [c, r] = cellOf(x, y);
+  if (c < 1 || c >= cols - 1 || r < 1 || r >= rows) return;
+  occlDepth = x + y;
+  put(c, r, C('i'), [0.75, 0.72, 0.68]);
+  const uc = [col[0] * 0.7, col[1] * 0.7, col[2] * 0.7];
+  put(c - 1, r - 1, CH.sl, uc, col, 0.25); put(c, r - 1, CH.caret, uc, col, 0.3); put(c + 1, r - 1, CH.bs, uc, col, 0.25);
+  occlDepth = -1e9;
+}
+function drawPeds() {
+  if (TWp < 30) return;
+  for (const w of walkers) {
+    const p = pointAt(w.r, w.s), a = pointAt(w.r, w.s - 0.3), b = pointAt(w.r, w.s + 0.3), tx = b[0] - a[0], ty = b[1] - a[1], l = Math.hypot(tx, ty) || 1;
+    const off = (HW + 0.85) * w.side;
+    drawPed(p[0] - ty / l * off, p[1] + tx / l * off, w.col);
+  }
+  for (const c of crossers) {
+    const A = c.dir ? c.cw.a : c.cw.b, Bp = c.dir ? c.cw.b : c.cw.a;
+    drawPed(A[0] + (Bp[0] - A[0]) * c.t, A[1] + (Bp[1] - A[1]) * c.t, c.col);
+  }
+}
+
+// ================================================================ upgrades shop
+const UP = {
+  signals: { name: 'Smart signals', desc: 'lights switch to whichever direction has cars waiting', cost: [300], lvl: 0 },
+  speed: { name: 'Speed limits', desc: '+12% cruising speed per level', cost: [200, 450, 900], lvl: 0 },
+  lights: { name: 'Street lights', desc: 'more, brighter lamps · 25% fewer crashes per level', cost: [150, 350, 700], lvl: 0 },
+  response: { name: 'Rapid response', desc: 'police and tow trucks arrive and clear faster', cost: [250, 600], lvl: 0 }
+};
+function renderShop() {
+  const list = document.getElementById('shopList');
+  list.textContent = '';
+  for (const [key, u] of Object.entries(UP)) {
+    const row = document.createElement('div'); row.className = 'shop-row';
+    const info = document.createElement('div');
+    const t = document.createElement('b'); t.textContent = `${u.name} ${'■'.repeat(u.lvl)}${'□'.repeat(u.cost.length - u.lvl)}`;
+    const d = document.createElement('span'); d.textContent = u.desc;
+    info.append(t, d);
+    const btn = document.createElement('button'); btn.type = 'button';
+    const maxed = u.lvl >= u.cost.length, price = maxed ? 0 : u.cost[u.lvl];
+    btn.textContent = maxed ? 'max' : `$${price}`;
+    btn.disabled = maxed || money < price;
+    btn.onclick = () => {
+      if (u.lvl >= u.cost.length || money < u.cost[u.lvl]) return;
+      money -= u.cost[u.lvl]; u.lvl++;
+      if (key === 'lights') rebuildNetwork();
+      toast(`${u.name} upgraded`); save(); renderShop();
+    };
+    row.append(info, btn); list.append(row);
+  }
+}
+// smart signals: a small state machine per junction instead of a fixed cycle
+function updateSignals(dt) {
+  if (!UP.signals.lvl) return;
+  for (const n of jnodes) {
+    if (!n.sig) continue;
+    const S = n.ss || (n.ss = { p: 0, t: 0, y: 0 });
+    if (S.y > 0) { S.y -= dt; if (S.y <= 0) { S.p = 1 - S.p; S.t = 0; } continue; }
+    S.t += dt;
+    let wCur = 0, wOther = 0;
+    for (const l of n.ins) for (const o of pathCars.get(l) || []) if (o.s > l.len - 14 && o.v < 1.5) { if (l.phase === S.p) wCur++; else wOther++; }
+    if ((S.t > 4 && wOther > 0 && (wCur === 0 || S.t > 11)) || S.t > 22) S.y = 2;
+  }
 }
 
 // ================================================================ city backdrop: procedural towers on a block grid
@@ -1813,7 +2032,8 @@ function frame(now) {
   if (nextWave <= 0) { nextWave = rr(7, 14); const fast = cars.filter(c => c.v > 5 && c.path.kind === 'lane'); if (fast.length) pick(fast).brakeT = rr(0.8, 1.4); }
   updateCars(dt);
   updateIncidents(dt);
-  if (rnd() < dt * 0.0005 * cars.length * [0.4, 1, 2.2][wi]) triggerCrash(true);
+  if (rnd() < dt * 0.0005 * cars.length * [0.4, 1, 2.2][wi] * (1 - 0.25 * UP.lights.lvl)) triggerCrash(true);
+  updateSignals(dt); updateClock(dt); updatePeds(dt);
   updateSound();
   updateFollow(dt);
   updateInertia(dt);
@@ -1833,8 +2053,9 @@ function frame(now) {
 
   // ---- per-frame cells
   chA.set(baseCh); albA.set(baseAlb); emA.set(baseEm);
-  const ak = WEATHER[wi].amb, ar = 0.25 * ak + flash * 0.9, ag = 0.29 * ak + flash * 0.95, ab = 0.42 * ak + flash;
-  for (let i = 0; i < NC; i++) { litA[i * 3] = ar + baseLit[i * 3]; litA[i * 3 + 1] = ag + baseLit[i * 3 + 1]; litA[i * 3 + 2] = ab + baseLit[i * 3 + 2]; }
+  const pal = palette(), lampK = Math.min(1.4, pal.lamp * (1 + UP.lights.lvl * 0.15));
+  const ak = WEATHER[wi].amb, ar = pal.amb[0] * ak + flash * 0.9, ag = pal.amb[1] * ak + flash * 0.95, ab = pal.amb[2] * ak + flash;
+  for (let i = 0; i < NC; i++) { litA[i * 3] = ar + baseLit[i * 3] * lampK; litA[i * 3 + 1] = ag + baseLit[i * 3 + 1] * lampK; litA[i * 3 + 2] = ab + baseLit[i * 3 + 2] * lampK; }
   refl.length = 0;
   // signals
   for (const s of sigHeads) {
@@ -1857,6 +2078,7 @@ function frame(now) {
     drawCar(c);
   }
   while (bi < blds.length) drawBuilding(blds[bi++]);
+  drawPeds();
   // road flares at incidents
   for (const inc of incidents) for (const f of inc.flares) {
     const fl = 0.7 + 0.3 * Math.sin(simT * 23 + f.ph) * Math.sin(simT * 7 + f.ph), [c, r] = cellOf(f.x, f.y);
@@ -1941,7 +2163,7 @@ function frame(now) {
     statT = 0.5;
     const tpm = pays.filter(p => p[0] > simT - 60).length;
     moneyEl.textContent = '$' + Math.floor(money).toLocaleString();
-    statsEl.textContent = `${tpm} trips/min · ${cars.length} cars`;
+    statsEl.textContent = `${clockStr()}${rushK() > 1.3 ? ' rush' : ''} · ${tpm} trips/min · ${cars.length} cars`;
     const todo = places.find(p => !p.connected);
     const todoMsg = todo && (todo.stops && todo.stops.length ? `${todo.name} needs a road to another building` : `connect ${todo.name} · drag from it to another building`);
     hintEl.textContent = mapView ? 'tap anywhere to jump there · drag to look around'
@@ -2081,6 +2303,8 @@ $('bMap').onclick = () => (mapView ? exitMap() : enterMap());
 $('bMore').onclick = () => { const m = $('more'); m.hidden = !m.hidden; $('bMore').setAttribute('aria-expanded', String(!m.hidden)); };
 const helpEl = $('help');
 $('bHelp').onclick = () => { helpEl.hidden = false; };
+$('bShop').onclick = () => { renderShop(); $('shop').hidden = false; };
+$('bShopClose').onclick = () => { $('shop').hidden = true; };
 $('bHelpOk').onclick = () => { helpEl.hidden = true; try { localStorage.setItem('rainline.help', '1'); } catch (e) { /* fine */ } };
 
 // ================================================================ boot: a small starter network so the city is alive on open
