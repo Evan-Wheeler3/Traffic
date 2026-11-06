@@ -67,13 +67,13 @@ button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
 'use strict';
 
 // ================================================================ tuning
-const HW = 2.1;            // road half width (tiles)
-const LANE = 1.05;         // lane offset from centre line
+const HW = 3.0;            // road half width (tiles)
+const LANE = 1.45;         // lane offset from centre line
 const NODE_R = HW + 1.0;   // junction disk radius
 const TRIM3 = HW + 1.6;    // lanes stop this far from a junction centre
 const TRIM2 = 1.0;         // ... and from a simple joint
 const BK = 6;              // spatial hash bucket (tiles)
-const TILE_COLS = 7;       // one tile is this many character cells wide
+const TILE_COLS = 10;      // one tile is this many character cells wide
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const FONT = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 const TAU = Math.PI * 2;
@@ -93,8 +93,8 @@ const C = s => s.codePointAt(0);
 
 // albedo (how much light a character reflects) and light colours, linear 0..1
 const AL = {
-  edge: [0.82, 0.86, 0.95], road: [0.40, 0.43, 0.53], puddle: [0.48, 0.62, 0.9], center: [1.0, 0.78, 0.3],
-  grid: [0.30, 0.34, 0.46], ground: [0.2, 0.3, 0.25], pole: [0.40, 0.42, 0.5], rain: [0.26, 0.3, 0.42], splash: [0.75, 0.8, 0.95]
+  edge: [1.1, 1.12, 1.2], road: [0.34, 0.37, 0.46], puddle: [0.48, 0.62, 0.9], center: [1.0, 0.78, 0.3],
+  grid: [0.30, 0.34, 0.46], ground: [0.3, 0.78, 0.46], pole: [0.40, 0.42, 0.5], rain: [0.26, 0.3, 0.42], splash: [0.75, 0.8, 0.95]
 };
 const LC = {
   sodium: [1.0, 0.52, 0.18], head: [1.0, 0.93, 0.78], tail: [1.0, 0.1, 0.05], red: [1.0, 0.12, 0.1], amber: [1.0, 0.62, 0.1],
@@ -153,8 +153,8 @@ function resizeCells() {
   glyphX.fillStyle = '#000'; glyphX.fillRect(0, 0, glyphC.width, glyphC.height);
   colorC.width = cols; colorC.height = rows; colorImg = colorX.createImageData(cols, rows);
   glowC.width = cols; glowC.height = rows; glowImg = glowX.createImageData(cols, rows);
-  g2C.width = Math.max(1, Math.ceil(cols / 3)); g2C.height = Math.max(1, Math.ceil(rows / 3));
-  g3C.width = Math.max(1, Math.ceil(cols / 8)); g3C.height = Math.max(1, Math.ceil(rows / 8));
+  g2C.width = Math.max(1, Math.ceil(cols / 6)); g2C.height = Math.max(1, Math.ceil(rows / 6));
+  g3C.width = Math.max(1, Math.ceil(cols / 16)); g3C.height = Math.max(1, Math.ceil(rows / 16));
   atlas.clear();
   baseDirty = true;
 }
@@ -388,7 +388,7 @@ function rebuildNetwork() {
   lamps = [];
   for (const r of roads) {
     let side = (r.id % 2) ? 1 : -1;
-    for (let u = 4; u < r.len - 2; u += 10, side = -side) {
+    for (let u = 4; u < r.len - 2; u += 7, side = -side) {
       const p = pointAt(r, u), a = pointAt(r, u - 0.4), b = pointAt(r, u + 0.4);
       const tx = b[0] - a[0], ty = b[1] - a[1], l = Math.hypot(tx, ty) || 1, nx = -ty / l * side, ny = tx / l * side;
       const x = p[0] + nx * (HW + 1.5), y = p[1] + ny * (HW + 1.5);
@@ -495,10 +495,10 @@ function placeCar(c) {
   c.hx = p.hx[i]; c.hy = p.hy[i];
 }
 function newCar(path, s, kind) {
-  const c = { id: ++cid, path, s, v: 3, kind: kind || 'car', len: 2, col: pick(BODY), v0f: rr(0.8, 1.08), acc: 0, brake: false, stuck: 0, ghost: 0, next: null,
+  const c = { id: ++cid, path, s, v: 3, kind: kind || 'car', len: 1.7, col: pick(BODY), v0f: rr(0.8, 1.08), acc: 0, brake: false, stuck: 0, ghost: 0, next: null,
     crash: false, hazard: false, rot: 0, cop: false, siren: false, stopAt: null, brakeT: 0, fade: 0, x: 0, y: 0, hx: 1, hy: 0 };
   if (c.kind === 'taxi') c.col = [1.0, 0.82, 0.25];
-  if (c.kind === 'bus') { c.len = 4; c.col = [0.3, 0.75, 0.85]; c.v0f *= 0.82; }
+  if (c.kind === 'bus') { c.len = 3.4; c.col = [0.3, 0.75, 0.85]; c.v0f *= 0.82; }
   if (c.kind === 'cop') { c.cop = true; c.col = [0.92, 0.94, 1.0]; c.v0f = 1.05; }
   if (path.kind === 'conn') path.occ++;
   placeCar(c);
@@ -665,43 +665,55 @@ function rebuildBase() {
   // world offsets of half a cell down and half a cell right
   const o0 = s2w(0, 0), v1 = s2w(0, ch / 2), h1 = s2w(cw / 2, 0);
   const vX = v1[0] - o0[0], vY = v1[1] - o0[1], hX = h1[0] - o0[0], hY = h1[1] - o0[1];
+  const ew = 1.3 * Math.max(Math.abs(vX) + Math.abs(vY), Math.abs(hX) + Math.abs(hY));
+  const tmp = [0, 0, 0];
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const i = r * cols + c, sx = (c + 0.5) * cw, sy = (r + 0.5) * ch;
     const w = s2w(sx, sy), x = w[0], y = w[1];
     wx[i] = x; wy[i] = y;
     const e = q(x, y), lat0 = QL, s0 = QS, r0 = QR, nd = QN;
-    const h = hash(Math.floor(x * 3), Math.floor(y * 3));
-    if (e < 1.6) {
-      const eT = q(x - vX, y - vY), lT = QL, rT = QR;
-      const eB = q(x + vX, y + vY), lB = QL, rB = QR;
-      const eL = q(x - hX, y - hY), lL = QL, rL = QR;
-      const eR = q(x + hX, y + hY), lR = QL, rR = QR;
-      const mn = Math.min(e, eT, eB, eL, eR), mx = Math.max(e, eT, eB, eL, eR);
-      if (mn < 0 && mx > 0) { setBase(i, edgeChar(eT, eB, eL, eR), AL.edge); isRoad[i] = 1; continue; }
-      if (e < 0) {
-        isRoad[i] = 1;
-        const same = rT === r0 && rB === r0 && rL === r0 && rR === r0;
-        const crosses = same && Math.min(lT, lB, lL, lR, lat0) < 0 && Math.max(lT, lB, lL, lR, lat0) > 0;
-        if (crosses && nd > TRIM3 + 0.6 && (s0 % 3.4) < 1.9) { setBase(i, edgeChar(lT, lB, lL, lR), AL.center); continue; }
-        if (vnoise(x * 0.35, y * 0.35) > 0.72 && h < 0.35) { setBase(i, CH.tilde, AL.puddle); continue; }
-        setBase(i, h < 0.3 ? CH.dot : h < 0.36 ? CH.com : CH.sp, AL.road);
-        continue;
-      }
+    const h = hash(Math.floor(x * 14), Math.floor(y * 14)), h2 = hash(Math.floor(y * 11) + 77, Math.floor(x * 11));
+    if (Math.abs(e) < ew) {
+      const eT = q(x - vX, y - vY), eB = q(x + vX, y + vY), eL = q(x - hX, y - hY), eR = q(x + hX, y + hY);
+      if (Math.min(e, eT, eB, eL, eR) < 0 && Math.max(e, eT, eB, eL, eR) > 0) { setBase(i, edgeChar(eT, eB, eL, eR), AL.edge); isRoad[i] = 1; continue; }
     }
-    // ground: a faint isometric lattice every 4 tiles, plus a little texture
-    const gs = w2s(Math.round(x / 4) * 4, Math.round(y / 4) * 4);
-    if (Math.abs(gs[0] - sx) <= cw / 2 && Math.abs(gs[1] - sy) <= ch / 2) { setBase(i, CH.plus, AL.grid); continue; }
-    if (h < 0.012) { setBase(i, CH.tick, AL.ground); continue; }
-    baseCh[i] = CH.sp; baseAlb[i * 3] = baseAlb[i * 3 + 1] = baseAlb[i * 3 + 2] = 0;
+    if (e < 0) {
+      isRoad[i] = 1;
+      if (Math.abs(lat0) < ew && nd > TRIM3 + 0.6 && (s0 % 3.4) < 1.9) {
+        q(x - vX, y - vY); const lT = QL, rT = QR; q(x + vX, y + vY); const lB = QL, rB = QR;
+        q(x - hX, y - hY); const lL = QL, rL = QR; q(x + hX, y + hY); const lR = QL, rR = QR;
+        if (rT === r0 && rB === r0 && rL === r0 && rR === r0 && Math.min(lT, lB, lL, lR, lat0) < 0 && Math.max(lT, lB, lL, lR, lat0) > 0) {
+          setBase(i, edgeChar(lT, lB, lL, lR), AL.center); continue;
+        }
+      }
+      if (vnoise(x * 0.3, y * 0.3) > 0.74 && h < 0.3) { setBase(i, CH.tilde, AL.puddle); continue; }
+      if (h < 0.5) {
+        const k = 0.6 + 0.5 * h2;
+        tmp[0] = AL.road[0] * k; tmp[1] = AL.road[1] * k; tmp[2] = AL.road[2] * k;
+        setBase(i, h < 0.22 ? CH.dot : h < 0.34 ? CH.colon : h < 0.44 ? CH.com : CH.apos, tmp);
+      } else baseCh[i] = CH.sp, baseAlb[i * 3] = baseAlb[i * 3 + 1] = baseAlb[i * 3 + 2] = 0;
+      continue;
+    }
+    // ground: a dense field of grass blades that lean in patches
+    const n = vnoise(x * 0.16, y * 0.16), dens = 0.3 + 0.55 * n;
+    if (h < dens) {
+      const lean = vnoise(x * 0.06 + 40, y * 0.06);
+      const code = h < dens * 0.12 ? CH.com : h < dens * 0.24 ? CH.apos : lean < 0.42 ? CH.sl : lean < 0.58 ? CH.bar : CH.bs;
+      const k = (0.45 + 0.75 * n) * (0.6 + 0.5 * h2);
+      tmp[0] = AL.ground[0] * k; tmp[1] = AL.ground[1] * k; tmp[2] = AL.ground[2] * k;
+      setBase(i, code, tmp);
+    } else { baseCh[i] = CH.sp; baseAlb[i * 3] = baseAlb[i * 3 + 1] = baseAlb[i * 3 + 2] = 0; }
   }
-  // lamps: pole + head characters and their pools of sodium light
+  // lamps: a tall pole of characters, a little head, and a pool of sodium light
+  const poleRows = Math.max(3, Math.round(3.3 * THp / ch));
   for (const L of lamps) {
     const [c, r] = cellOf(L.x, L.y);
-    for (let k = 0; k <= 2; k++) putBase(c, r - k, CH.bar, AL.pole);
-    putBase(c, r - 3, CH.star, AL.pole);
-    emBase(c, r - 3, LC.sodium, 1.7);
+    for (let k = 0; k < poleRows; k++) putBase(c, r - k, CH.bar, AL.pole);
+    const hr = r - poleRows;
+    putBase(c - 1, hr, CH.dash, AL.pole); putBase(c + 1, hr, CH.dash, AL.pole); putBase(c, hr, CH.star, AL.pole);
+    emBase(c, hr, LC.sodium, 2.0); emBase(c - 1, hr, LC.sodium, 0.7); emBase(c + 1, hr, LC.sodium, 0.7);
     poolInto(baseLit, L.px, L.py, 7, LC.sodium, 1.05);
-    poolInto(baseLit, L.x, L.y, 2, LC.sodium, 0.5);
+    poolInto(baseLit, L.x, L.y, 2.2, LC.sodium, 0.6);
     reflectInto(baseLit, c, r, LC.sodium, 0.9, true);
   }
   baseDirty = false;
@@ -739,17 +751,17 @@ function coneInto(buf, x, y, hx, hy, L, col, I) {
   }
 }
 // wet road: a light smears into a vertical streak just below its ground point
-const RFALL = [0, 0.7, 0.5, 0.34, 0.2, 0.1];
 function reflectInto(buf, c, r, col, I, toBase) {
-  const arr = toBase ? baseCh : chA, alb = toBase ? baseAlb : albA;
-  for (let k = 1; k <= 5; k++) {
+  const arr = toBase ? baseCh : chA, alb = toBase ? baseAlb : albA, K = Math.max(4, Math.round(48 / ch));
+  for (let k = 1; k <= K; k++) {
     const rr_ = r + k; if (c < 0 || c >= cols || rr_ < 0 || rr_ >= rows) continue;
     const i = rr_ * cols + c;
     if (!isRoad[i]) continue;
-    const f = I * RFALL[k] * (0.75 + 0.25 * Math.sin(k * 2.1 + simT * 6 + c));
+    const f = I * 0.75 * Math.pow(1 - k / (K + 1), 1.5) * (0.65 + 0.35 * Math.sin(k * 1.7 + simT * 7 + c * 0.7));
     buf[i * 3] += col[0] * f; buf[i * 3 + 1] += col[1] * f; buf[i * 3 + 2] += col[2] * f;
-    if ((arr[i] === CH.dot || arr[i] === CH.com || arr[i] === CH.apos || arr[i] === CH.sp) && f > 0.18) {
-      arr[i] = f > 0.45 ? CH.brk : CH.colon;
+    const ch_ = arr[i];
+    if ((ch_ === CH.dot || ch_ === CH.com || ch_ === CH.apos || ch_ === CH.colon || ch_ === CH.sp) && f > 0.16) {
+      arr[i] = f > 0.42 ? CH.brk : CH.colon;
       alb[i * 3] = Math.max(alb[i * 3], 0.55); alb[i * 3 + 1] = Math.max(alb[i * 3 + 1], 0.58); alb[i * 3 + 2] = Math.max(alb[i * 3 + 2], 0.68);
     }
   }
@@ -772,62 +784,73 @@ function bodyChar(sx, sy) {
   return sx * sy > 0 ? CH.bs : CH.sl;
 }
 const refl = [];
+const carSeen = new Map();
 function drawCar(c) {
   let hx = c.hx, hy = c.hy;
   if (c.rot) { const co = Math.cos(c.rot), si = Math.sin(c.rot), nx = hx * co - hy * si; hy = hx * si + hy * co; hx = nx; }
   const fade = c.fade * (c.path.kind === 'lane' && c.path.to.deg < 2 ? clamp((c.path.len - c.s) / 3, 0, 1) : 1);
   if (fade <= 0.02) return;
+  const rxv = -hy, ryv = hx;
   const sxh = (hx - hy) * TWp / 2, syh = (hx + hy) * THp / 2, sn = Math.hypot(sxh, syh) || 1, tow = syh / sn;
-  const cells = [];
-  for (let t = -c.len / 2; t <= c.len / 2 + 1e-6; t += 0.25) {
-    const [cc, rr_] = cellOf(c.x + hx * t, c.y + hy * t), l = cells[cells.length - 1];
-    if (!l || l[0] !== cc || l[1] !== rr_) cells.push([cc, rr_]);
+  const L = c.len, Wd = c.kind === 'bus' ? 1.0 : 0.85, st = 0.08;
+  const roofUp = Math.max(1, Math.round(0.5 * THp / ch));
+  const lo = [c.col[0] * 0.42 * fade, c.col[1] * 0.42 * fade, c.col[2] * 0.42 * fade];
+  const hi = [c.col[0] * fade, c.col[1] * fade, c.col[2] * fade];
+  const glass = [0.3 * fade, 0.42 * fade, 0.62 * fade];
+  carSeen.clear();
+  for (let u = -L / 2; u <= L / 2 + 1e-6; u += st) for (let v = -Wd / 2; v <= Wd / 2 + 1e-6; v += st) {
+    const [cc, rr_] = cellOf(c.x + hx * u + rxv * v, c.y + hy * u + ryv * v), k = cc * 8192 + rr_;
+    if (!carSeen.has(k)) carSeen.set(k, [cc, rr_, u, v]);
   }
-  const bc = c.kind === 'bus' ? CH.hash : bodyChar(sxh, syh);
-  const col = [c.col[0] * fade, c.col[1] * fade, c.col[2] * fade];
-  for (let k = 1; k < cells.length - 1; k++) {
-    const i = put(cells[k][0], cells[k][1], bc, col, c.col, 0.07 * fade);
-    if (c.kind === 'bus' && i >= 0) { emA[i * 3] += 0.35 * fade; emA[i * 3 + 1] += 0.26 * fade; emA[i * 3 + 2] += 0.1 * fade; }
+  // lower body
+  for (const [cc, rr_] of carSeen.values()) put(cc, rr_, CH.hash, lo, c.col, 0.05 * fade);
+  // roof / cabin, lifted a little so the car has height
+  const r0 = c.kind === 'bus' ? -L * 0.47 : -L * 0.3, r1 = c.kind === 'bus' ? L * 0.47 : L * 0.22, rv = Wd * 0.38;
+  const bar = Math.sin(simT * 13 + c.id) > 0 ? LC.copR : LC.copB;
+  for (const [cc, rr_, u, v] of carSeen.values()) {
+    if (u < r0 || u > r1 || Math.abs(v) > rv) continue;
+    const front = u > r1 - L * 0.16, back = u < r0 + L * 0.1;
+    if (c.kind === 'bus') { put(cc, rr_ - roofUp, CH.eq, [0.9 * fade, 0.75 * fade, 0.45 * fade], [1, 0.75, 0.4], 0.32 * fade); continue; }
+    if (c.cop && c.siren && Math.abs(u + L * 0.04) < 0.13) { put(cc, rr_ - roofUp, CH.eq, [0.6, 0.6, 0.7], bar, 2.2 * fade); continue; }
+    put(cc, rr_ - roofUp, front || back ? CH.eq : CH.hash, front || back ? glass : hi, c.col, 0.08 * fade);
   }
-  const head = cells[cells.length - 1], tail = cells[0];
-  const hk = (0.55 + 1.1 * Math.max(0, tow)) * fade, tk = (c.brake ? 1.5 : 0.6) * (0.7 + 0.5 * Math.max(0, -tow)) * fade;
-  put(head[0], head[1], CH.o, [0.9, 0.9, 0.85], LC.head, hk);
-  if (cells.length > 1) put(tail[0], tail[1], c.brake ? CH.O : CH.o, [0.8, 0.2, 0.15], LC.tail, tk);
-  if (c.hazard && blinkOn(c.id, 9)) { put(head[0], head[1], CH.o, null, LC.amber, 1.4); put(tail[0], tail[1], CH.o, null, LC.amber, 1.4); poolInto(litA, c.x, c.y, 3.5, LC.amber, 0.7); }
+  if (c.kind === 'taxi') { const [cc, rr_] = cellOf(c.x, c.y); put(cc, rr_ - roofUp - 1, CH.caret, [1, 0.85, 0.4], [1, 0.8, 0.3], 0.9 * fade); }
+  // lamps on the corners
+  const hk = (0.6 + 1.2 * Math.max(0, tow)) * fade, tk = (c.brake ? 1.6 : 0.6) * (0.7 + 0.5 * Math.max(0, -tow)) * fade;
+  const haz = c.hazard && blinkOn(c.id, 9);
+  let hc = null, tc = null;
+  for (const sd of [-1, 1]) {
+    hc = cellOf(c.x + hx * L / 2 + rxv * sd * Wd * 0.34, c.y + hy * L / 2 + ryv * sd * Wd * 0.34);
+    tc = cellOf(c.x - hx * L / 2 + rxv * sd * Wd * 0.34, c.y - hy * L / 2 + ryv * sd * Wd * 0.34);
+    put(hc[0], hc[1], CH.o, [0.9, 0.9, 0.85], haz ? LC.amber : LC.head, haz ? 1.4 : hk);
+    put(tc[0], tc[1], c.brake ? CH.O : CH.o, [0.8, 0.2, 0.15], haz ? LC.amber : LC.tail, haz ? 1.4 : tk);
+  }
+  if (haz) poolInto(litA, c.x, c.y, 3.5, LC.amber, 0.7);
   // light cast onto the road
-  const fx = c.x + hx * c.len / 2, fy = c.y + hy * c.len / 2, bx = c.x - hx * c.len / 2, by = c.y - hy * c.len / 2;
+  const fx = c.x + hx * L / 2, fy = c.y + hy * L / 2, bx = c.x - hx * L / 2, by = c.y - hy * L / 2;
   coneInto(litA, fx, fy, hx, hy, 10, LC.head, 1.15 * fade);
   poolInto(litA, bx - hx * 0.6, by - hy * 0.6, c.brake ? 3 : 2.2, LC.tail, (c.brake ? 0.9 : 0.4) * fade);
-  refl.push([head[0], head[1], LC.head, 0.9 * Math.max(0, tow) * fade]);
-  refl.push([tail[0], tail[1], LC.tail, (c.brake ? 0.9 : 0.4) * fade]);
-  const mid = cells[(cells.length / 2) | 0];
-  if (c.cop) {
-    if (c.siren) {
-      const lc = Math.sin(simT * 13 + c.id) > 0 ? LC.copR : LC.copB;
-      put(mid[0], mid[1] - 1, CH.eq, [0.6, 0.6, 0.7], lc, 2.4 * fade);
-      poolInto(litA, c.x, c.y, 8, lc, 1.1 * fade);
-      refl.push([mid[0], mid[1], lc, 1.0 * fade]);
-    } else put(mid[0], mid[1] - 1, CH.eq, [0.35, 0.35, 0.45], null, 0);
-  }
-  if (c.kind === 'taxi') put(mid[0], mid[1] - 1, CH.caret, [1, 0.85, 0.4], [1, 0.8, 0.3], 0.8 * fade);
+  refl.push([hc[0], hc[1], LC.head, 0.9 * Math.max(0, tow) * fade]);
+  refl.push([tc[0], tc[1], LC.tail, (c.brake ? 0.9 : 0.4) * fade]);
+  if (c.cop && c.siren) { poolInto(litA, c.x, c.y, 8, bar, 1.1 * fade); const m = cellOf(c.x, c.y); refl.push([m[0], m[1], bar, 1.0 * fade]); }
 }
 
 // ================================================================ rain
 let drops = [], splashes = [], flash = 0, flashQ = 0;
 const WIND = 0.08;
 function setRain() {
-  const target = Math.round(NC * WEATHER[wi].rain * (REDUCED ? 0.4 : 1));
-  while (drops.length < target) drops.push({ c: rnd() * (cols + 10) - 5, r: rnd() * rows, v: rr(28, 46), tail: rnd() < 0.35 });
+  const target = Math.round(NC * WEATHER[wi].rain * 0.55 * (REDUCED ? 0.4 : 1));
+  while (drops.length < target) drops.push({ c: rnd() * (cols + 20) - 10, r: rnd() * rows, v: rr(650, 1050) / ch, len: 2 + ((rnd() * 4) | 0) });
   drops.length = target;
 }
 function updateRain(dt) {
   for (const d of drops) {
     d.r += d.v * dt; d.c += d.v * dt * WIND * (ch / cw);
-    if (d.r > rows + 1) { d.r = -1 - rnd() * 3; d.c = rnd() * (cols + 10) - 5; }
+    if (d.r > rows + 6) { d.r = -1 - rnd() * 8; d.c = rnd() * (cols + 20) - 10; d.v = rr(650, 1050) / ch; }
   }
-  let n = NC * WEATHER[wi].rain * 0.9 * dt;
+  let n = NC * WEATHER[wi].rain * 0.6 * dt;
   while (n > 0) { if (rnd() < n) splashes.push({ c: (rnd() * cols) | 0, r: (rnd() * rows) | 0, t: 0 }); n -= 1; }
-  for (let i = splashes.length - 1; i >= 0; i--) { splashes[i].t += dt; if (splashes[i].t > 0.32) splashes.splice(i, 1); }
+  for (let i = splashes.length - 1; i >= 0; i--) { splashes[i].t += dt; if (splashes[i].t > 0.3) splashes.splice(i, 1); }
 }
 
 // ================================================================ frame
@@ -856,14 +879,16 @@ function frame(now) {
 
   // ---- per-frame cells
   chA.set(baseCh); albA.set(baseAlb); emA.set(baseEm);
-  const ak = WEATHER[wi].amb, ar = 0.2 * ak + flash * 0.9, ag = 0.23 * ak + flash * 0.95, ab = 0.36 * ak + flash;
+  const ak = WEATHER[wi].amb, ar = 0.22 * ak + flash * 0.9, ag = 0.27 * ak + flash * 0.95, ab = 0.4 * ak + flash;
   for (let i = 0; i < NC; i++) { litA[i * 3] = ar + baseLit[i * 3]; litA[i * 3 + 1] = ag + baseLit[i * 3 + 1]; litA[i * 3 + 2] = ab + baseLit[i * 3 + 2]; }
   refl.length = 0;
   // signals
   for (const s of sigHeads) {
     const col = sigCol(sigState(s.node, s.lane.phase)), [c, r] = cellOf(s.x, s.y);
-    put(c, r, CH.bar, AL.pole); put(c, r - 1, CH.bar, AL.pole);
-    put(c, r - 2, CH.O, [0.5, 0.5, 0.5], col, 1.8);
+    const pr = Math.max(2, Math.round(2.3 * THp / ch));
+    for (let k = 0; k < pr; k++) put(c, r - k, CH.bar, AL.pole);
+    put(c - 1, r - pr, C('['), AL.pole); put(c + 1, r - pr, C(']'), AL.pole);
+    put(c, r - pr, CH.O, [0.5, 0.5, 0.5], col, 2.0);
     poolInto(litA, s.sx, s.sy, 3, col, 0.65);
     refl.push([c, r, col, 0.6]);
   }
@@ -883,7 +908,7 @@ function frame(now) {
     for (let k = Math.max(0, n - 14); k < n; k++) {
       const age = simT - stroke.t[k]; if (age > 0.7) continue;
       const p = stroke.pts[k], a = 1 - age / 0.7;
-      for (let j = 0; j < 4; j++) {
+      for (let j = 0; j < 16; j++) {
         const ang = rnd() * TAU, rad = rnd() * HW, [c, r] = cellOf(p[0] + Math.cos(ang) * rad, p[1] + Math.sin(ang) * rad);
         put(c, r, pick([CH.star, CH.plus, CH.x, CH.dot]), [0.6, 0.9, 1], [0.45, 0.85, 1], 1.4 * a);
       }
@@ -894,9 +919,10 @@ function frame(now) {
   }
   for (const [c, r, col, I] of refl) if (I > 0.02) reflectInto(litA, c, r, col, I, false);
   // rain (lit by whatever light the cell already has)
-  for (const d of drops) {
-    const c = Math.floor(d.c), r = Math.floor(d.r);
-    put(c, r, CH.bar, AL.rain);
+  const slant = WIND * (ch / cw);
+  for (const d of drops) for (let k = 0; k < d.len; k++) {
+    const k2 = 1 - k / d.len;
+    put(Math.floor(d.c - k * slant), Math.floor(d.r) - k, k === 0 ? CH.bar : CH.apos, [AL.rain[0] * k2, AL.rain[1] * k2, AL.rain[2] * k2]);
   }
   for (const s of splashes) if (s.r < rows && s.c < cols && isRoad[s.r * cols + s.c]) put(s.c, s.r, s.t < 0.1 ? CH.dot : s.t < 0.2 ? CH.o : CH.deg, AL.splash);
 
@@ -932,9 +958,9 @@ function frame(now) {
   g2X.clearRect(0, 0, g2C.width, g2C.height); g2X.drawImage(glowC, 0, 0, g2C.width, g2C.height);
   g3X.clearRect(0, 0, g3C.width, g3C.height); g3X.drawImage(g2C, 0, 0, g3C.width, g3C.height);
   ctx.globalCompositeOperation = 'lighter';
-  ctx.globalAlpha = 0.55; ctx.drawImage(glowC, 0, 0, cols * cwD, rows * chD);
-  ctx.globalAlpha = 0.75; ctx.drawImage(g2C, 0, 0, cols * cwD, rows * chD);
-  ctx.globalAlpha = 0.6; ctx.drawImage(g3C, 0, 0, cols * cwD, rows * chD);
+  ctx.globalAlpha = 0.35; ctx.drawImage(glowC, 0, 0, cols * cwD, rows * chD);
+  ctx.globalAlpha = 0.9; ctx.drawImage(g2C, 0, 0, cols * cwD, rows * chD);
+  ctx.globalAlpha = 0.8; ctx.drawImage(g3C, 0, 0, cols * cwD, rows * chD);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(vigC, 0, 0);
 
@@ -954,7 +980,7 @@ const ptrs = new Map();
 let pinch = null, panning = false;
 function zoomAt(mx, my, f) {
   const [x, y] = s2w(mx, my);
-  const nF = clamp(F * f, 7, 30);
+  const nF = clamp(F * f, 4, 18);
   if (Math.abs(nF - F) < 1e-3) return;
   F = nF; resizeCells(); setRain();
   cam.ox = mx - (x - y) * TWp / 2; cam.oy = my - (x + y) * THp / 2;
@@ -1011,7 +1037,7 @@ $('bCrash').onclick = triggerCrash;
 
 // ================================================================ boot: a small starter network so the city is alive on open
 resizeAll();
-F = clamp(Math.round(W / 36), 10, 14);
+F = clamp(Math.round(W / 65), 5, 8);
 resizeCells();
 centerOn(0, 0);
 setRain();
