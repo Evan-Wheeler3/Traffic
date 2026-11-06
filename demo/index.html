@@ -26,7 +26,14 @@ body { margin: 0; color: var(--ink); font-family: var(--mono); touch-action: non
 }
 .brand b { color: var(--neon); font-weight: 700; text-shadow: 0 0 10px rgba(255, 179, 71, 0.7); }
 .brand span { color: var(--dim); }
-.stats { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
+.stats { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; display: flex; flex-direction: column; gap: 4px; }
+.stats b { color: var(--neon); font-size: 15px; letter-spacing: 0.08em; text-shadow: 0 0 10px rgba(255, 179, 71, 0.6); }
+.toast {
+  position: fixed; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 64px); transform: translateX(-50%);
+  max-width: calc(100% - 32px); padding: 10px 14px; background: var(--panel); border: 1px solid var(--neon);
+  color: var(--ink); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; text-align: center;
+  pointer-events: none; opacity: 0; transition: opacity 0.5s;
+}
 .hud-bottom {
   position: fixed; left: 0; right: 0; bottom: 0; pointer-events: none;
   padding: 0 max(12px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 12px) max(12px, env(safe-area-inset-left, 0px));
@@ -48,8 +55,9 @@ button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
 <canvas id="view" aria-label="ASCII isometric road sandbox at night in the rain. Drag to draw roads; cars drive on them."></canvas>
 <div class="hud-top">
   <div class="brand"><b>RAINLINE</b></div>
-  <div class="stats" id="stats">booting</div>
+  <div class="stats"><b id="money">$0</b><span id="stats">booting</span></div>
 </div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="hud-bottom">
   <div class="bar">
     <button id="bMode" type="button" aria-pressed="true">draw</button>
@@ -67,13 +75,13 @@ button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
 'use strict';
 
 // ================================================================ tuning
-const HW = 3.0;            // road half width (tiles)
-const LANE = 1.45;         // lane offset from centre line
+const HW = 2.3;            // road half width (tiles)
+const LANE = 1.1;          // lane offset from centre line
 const NODE_R = HW + 1.0;   // junction disk radius
 const TRIM3 = HW + 1.6;    // lanes stop this far from a junction centre
 const TRIM2 = 1.0;         // ... and from a simple joint
 const BK = 6;              // spatial hash bucket (tiles)
-const TILE_COLS = 10;      // one tile is this many character cells wide
+const TILE_COLS = 11;      // one tile is this many character cells wide
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const FONT = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 const TAU = Math.PI * 2;
@@ -402,6 +410,7 @@ function rebuildNetwork() {
     const ex = l.xs[l.n - 1], ey = l.ys[l.n - 1], hx = l.hx[l.n - 1], hy = l.hy[l.n - 1];
     sigHeads.push({ node: n, lane: l, x: ex - hy * (LANE + 1.9), y: ey + hx * (LANE + 1.9), sx: ex, sy: ey });
   }
+  assignPlaces();
   baseDirty = true;
 }
 function sigState(n, phase) {
@@ -466,21 +475,24 @@ function commitStroke(raw, quiet) {
   for (let k = 0; k < 3; k++) p = chaikin(p, closed);
   if (closed) p.push(p[0].slice());
   else {
-    const sA = nearestOnRoads(p[0][0], p[0][1], 3.2), sB = nearestOnRoads(p[p.length - 1][0], p[p.length - 1][1], 3.2);
+    const snapP = pt => { let b = null, bd = PLACE_R + 1.5; for (const pl of places) { const d = Math.hypot(pl.x - pt[0], pl.y - pt[1]); if (d < bd) { bd = d; b = [pl.x, pl.y]; } } return b; };
+    const sA = snapP(p[0]) || nearestOnRoads(p[0][0], p[0][1], 3.2), sB = snapP(p[p.length - 1]) || nearestOnRoads(p[p.length - 1][0], p[p.length - 1][1], 3.2);
     if (sA) p.unshift(sA);
     if (sB) p.push(sB);
   }
   const r = { id: ++roadId, pts: resample(p, 0.5), closed };
   if (closed) r.pts[r.pts.length - 1] = r.pts[0].slice();
+  measure(r);
+  r.cost = quiet ? 0 : Math.min(Math.floor(money), Math.ceil(r.len * COST));
+  money -= r.cost;
   roads.push(r);
   rebuildNetwork();
   remapCars();
-  if (!quiet) for (let k = 0; k < 4; k++) spawnCar(true);
   return true;
 }
 
 // ================================================================ vehicles
-let cars = [], trips = 0, cid = 0, simT = 0;
+let cars = [], cid = 0, simT = 0;
 const incidents = [];
 const WEATHER = [
   { name: 'drizzle', rain: 0.01, vf: 1.0, T: 1.3, b: 2.7, amb: 1.0 },
@@ -505,22 +517,13 @@ function newCar(path, s, kind) {
   cars.push(c);
   return c;
 }
-function spawnCar(anywhere) {
-  if (!lanes.length) return;
-  let lane, s = 0;
-  if (spawnLanes.length && !anywhere && rnd() < 0.85) lane = pick(spawnLanes);
-  else { lane = pick(lanes); s = rnd() * lane.len * 0.8; }
-  const i = Math.min(lane.n - 1, Math.round(s / lane.step)), px = lane.xs[i], py = lane.ys[i];
-  for (const o of cars) {
-    if (o.path === lane && Math.abs(o.s - s) < 5) return;
-    if (Math.abs(o.x - px) + Math.abs(o.y - py) < 3) return;
-  }
-  const hasCop = cars.some(c => c.cop && !c.responder);
-  const q_ = rnd();
-  newCar(lane, s, !hasCop && cars.length > 12 && q_ < 0.05 ? 'cop' : q_ < 0.12 ? 'taxi' : q_ < 0.17 ? 'bus' : 'car');
-}
-function chooseConn(lane) {
+function chooseConn(lane, car) {
   if (!lane.conns.length) return null;
+  if (car && car.dest) {
+    let best = null, bv = Infinity;
+    for (const c of lane.conns) { const d = car.dest.dist.get(c.target); if (d == null) continue; const v = c.len + d + rnd() * 3; if (v < bv) { bv = v; best = c; } }
+    if (best) return best;
+  }
   let t = 0; for (const c of lane.conns) t += c.w;
   let x = rnd() * t;
   for (const c of lane.conns) { x -= c.w; if (x <= 0) return c; }
@@ -554,10 +557,10 @@ function updateCars(dt) {
       const g = f - (c.len + o.len) / 2;
       if (g < gap) { gap = g; vl = o.v * dot; }
     }
-    if (p.kind === 'lane' && p.to.deg >= 2) {
+    if (p.kind === 'lane' && p.to.deg >= 2 && !(c.dest && c.dest.nodes.includes(p.to))) {
       const rem = p.len - c.s;
       if (rem < 7) {
-        if (!c.next) c.next = chooseConn(p);
+        if (!c.next) c.next = chooseConn(p, c);
         if (c.next && blocked(c, p, c.next, rem)) { const g = Math.max(0, rem - 0.4); if (g < gap) { gap = g; vl = 0; held = true; } }
       }
     }
@@ -585,13 +588,15 @@ function updateCars(dt) {
     while (c.s >= c.path.len) {
       const P = c.path;
       if (P.kind === 'lane') {
-        if (P.to.deg < 2) { c.dead = true; trips++; break; }
-        if (!c.next) c.next = chooseConn(P);
+        if (c.dest && c.dest.nodes.includes(P.to)) { c.dead = true; arrive(c); break; }
+        if (P.to.deg < 2) { c.dead = true; break; }
+        if (!c.next) c.next = chooseConn(P, c);
         if (!c.next) { c.dead = true; break; }
         if (c.ghost <= 0 && blocked(c, P, c.next, 0)) { c.s = P.len; c.v = 0; break; }
         c.s -= P.len; c.path = c.next; c.next = null; c.path.occ++;
       } else { P.occ--; c.s -= P.len; c.path = P.target; }
     }
+    if (c.t0 != null && simT - c.t0 > 180 && !c.crash) c.dead = true;
     if (!c.dead) placeCar(c);
   }
   for (let k = cars.length - 1; k >= 0; k--) {
@@ -630,7 +635,7 @@ function updateIncidents(dt) {
     if (!inc.cop && inc.t > 2.5 && c.path.opp) {
       const opp = c.path.opp, so = opp.len - c.s;
       const cop = newCar(opp, Math.max(0, so - 16), 'cop');
-      cop.responder = true; cop.siren = true; cop.ghost = 99; cop.v = 7; cop.stopAt = Math.max(0.5, so - 1.2); cop.fade = 1;
+      cop.responder = true; cop.dest = pick(places.filter(q_ => q_.connected)) || null; cop.t0 = simT; cop.siren = true; cop.ghost = 99; cop.v = 7; cop.stopAt = Math.max(0.5, so - 1.2); cop.fade = 1;
       inc.cop = cop;
       for (const d of [3.2, 5, 6.8]) { const s = Math.max(0, c.s - d), i = Math.round(s / c.path.step); inc.flares.push({ x: c.path.xs[i], y: c.path.ys[i], ph: rnd() * 9 }); }
     }
@@ -641,6 +646,173 @@ function updateIncidents(dt) {
     if (cop && inc.t > clearAt + 2) { cop.stopAt = null; cop.ghost = 0; }
     if (cop && inc.t > clearAt + 7) cop.siren = false;
     if (inc.t > clearAt + 7 || c.dead) incidents.splice(k, 1);
+  }
+}
+
+// ================================================================ game: places, trips, money, saving
+const PLACE_R = 5, COST = 1.5, SAVE_KEY = 'rainline.save.v1';
+const PLACE_NAMES = ['MOTEL', 'DINER', 'GAS 24', 'KARAOKE', 'ARCADE', 'NOODLES', 'LAUNDRY', 'BOWLING', 'CINEMA', 'DOCKS', 'RADIO', 'PIZZA', 'HOSPITAL', 'JAZZ BAR', 'PAWN', 'TATTOO'];
+const NEONS = [[1, 0.3, 0.7], [0.3, 0.9, 1], [1, 0.62, 0.2], [0.7, 0.4, 1], [0.4, 1, 0.55], [1, 0.9, 0.3], [1, 0.35, 0.3]];
+let places = [], money = 150, tripsTotal = 0, nextPlace = 45, pays = [], floaters = [];
+function addPlace(name, x, y, ci, flick) {
+  const p = { id: places.length, name, x, y, ci, col: NEONS[ci % NEONS.length], flick: !!flick, nodes: [], spawn: [], dist: new Map(), connected: false, demand: 0.6 };
+  places.push(p);
+  return p;
+}
+// which junctions belong to each sign, and shortest-route distances to it from every lane
+function assignPlaces() {
+  const into = new Map();
+  for (const c of conns) { let a = into.get(c.target); if (!a) into.set(c.target, a = []); a.push(c); }
+  for (const p of places) {
+    p.nodes = nodes.filter(n => (n.ins.length || n.outs.length) && Math.hypot(n.x - p.x, n.y - p.y) < PLACE_R);
+    p.spawn = lanes.filter(l => p.nodes.includes(l.from));
+    const dist = new Map(), done = new Set();
+    for (const l of lanes) if (p.nodes.includes(l.to)) dist.set(l, l.len);
+    for (;;) {
+      let u = null, ud = Infinity;
+      for (const [l, d] of dist) if (!done.has(l) && d < ud) { u = l; ud = d; }
+      if (!u) break;
+      done.add(u);
+      for (const c of into.get(u) || []) {
+        const L = c.from;
+        if (p.nodes.includes(L.to)) continue;
+        const nd = L.len + c.len + ud;
+        if (nd < (dist.get(L) ?? Infinity)) dist.set(L, nd);
+      }
+    }
+    p.dist = dist;
+  }
+  for (const p of places) p.connected = places.some(o => o !== p && p.spawn.some(l => o.dist.has(l)));
+}
+function updateDemand(dt) {
+  for (const p of places) {
+    if (!p.connected) continue;
+    p.demand = Math.min(5, p.demand + dt * 0.28 * TRAFFIC[ti].k);
+    if (p.demand < 1 || cars.length > 200) continue;
+    const dests = places.filter(o => o !== p && p.spawn.some(l => o.dist.has(l)));
+    if (!dests.length) continue;
+    const d = pick(dests);
+    let lane = null, best = Infinity;
+    for (const l of p.spawn) { const v = d.dist.get(l); if (v != null && v < best) { best = v; lane = l; } }
+    if (!lane || cars.some(o => o.path === lane && o.s < 4.5)) continue;
+    const hasCop = cars.some(c => c.cop && !c.responder), q_ = rnd();
+    const car = newCar(lane, 0, !hasCop && cars.length > 10 && q_ < 0.06 ? 'cop' : q_ < 0.14 ? 'taxi' : q_ < 0.2 ? 'bus' : 'car');
+    car.dest = d; car.orig = p; car.t0 = simT; car.ideal = best;
+    p.demand -= 1;
+  }
+}
+// fare = trip length x how close to free-flow it ran, so jams cost money
+function arrive(c) {
+  if (c.responder || c.ideal == null) return;
+  const actual = Math.max(0.1, simT - c.t0), eff = clamp((c.ideal / 7.5) / actual, 0.35, 1.15);
+  const mult = c.kind === 'taxi' ? 1.5 : c.kind === 'bus' ? 2.2 : 1;
+  const pay = Math.max(1, Math.round((3 + c.ideal * 0.22) * eff * mult));
+  money += pay; tripsTotal++; pays.push([simT, pay]);
+  floaters.push({ x: c.dest.x, y: c.dest.y, text: '+$' + pay, t: 0, col: eff > 0.8 ? [1, 0.85, 0.3] : [1, 0.5, 0.2] });
+}
+function incomeRate() {
+  while (pays.length && pays[0][0] < simT - 120) pays.shift();
+  let s = 0; for (const p of pays) s += p[1];
+  return s / Math.min(120, Math.max(30, simT));
+}
+function spawnPlace() {
+  if (places.length >= PLACE_NAMES.length) return;
+  const used = new Set(places.map(p => p.name)), name = PLACE_NAMES.find(n => !used.has(n));
+  let cx = 0, cy = 0;
+  for (const p of places) { cx += p.x; cy += p.y; }
+  cx /= places.length || 1; cy /= places.length || 1;
+  buildSegHash();
+  for (let k = 0; k < 120; k++) {
+    const a = rnd() * TAU, d = rr(14, 22 + places.length * 2.5), x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d;
+    if (places.some(p => Math.hypot(p.x - x, p.y - y) < 13)) continue;
+    if (q(x, y) < 4) continue;
+    addPlace(name, x, y, places.length, rnd() < 0.3);
+    assignPlaces(); baseDirty = true;
+    toast(`${name} opened · draw a road to its sign`);
+    return;
+  }
+}
+const toastEl = document.getElementById('toast');
+let toastT = 0;
+function toast(msg) { toastEl.textContent = msg; toastEl.style.opacity = 1; toastT = 4.5; }
+function save() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      v: 1, t: Date.now(), money: Math.floor(money), trips: tripsTotal, rate: incomeRate(), np: nextPlace,
+      roads: roads.map(r => ({ c: r.closed ? 1 : 0, k: r.cost || 0, p: r.pts.map(q_ => [Math.round(q_[0] * 100) / 100, Math.round(q_[1] * 100) / 100]) })),
+      places: places.map(p => ({ n: p.name, x: p.x, y: p.y, c: p.ci, f: p.flick ? 1 : 0 }))
+    }));
+  } catch (e) { /* storage unavailable: the city just won't persist */ }
+}
+function load() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (e) { d = null; }
+  if (!d || d.v !== 1 || !Array.isArray(d.places) || !d.places.length || !Array.isArray(d.roads)) return false;
+  for (const p of d.places) addPlace(p.n, p.x, p.y, p.c, p.f);
+  roads = d.roads.filter(r => Array.isArray(r.p) && r.p.length > 1).map(r => ({ id: ++roadId, pts: r.p, closed: !!r.c, cost: r.k || 0 }));
+  money = +d.money || 0; tripsTotal = d.trips || 0; nextPlace = d.np || 40;
+  rebuildNetwork();
+  const away = Math.min(8 * 3600, Math.max(0, (Date.now() - (d.t || Date.now())) / 1000));
+  if (away > 60 && d.rate > 0) { const gain = Math.round(away * d.rate * 0.5); money += gain; setTimeout(() => toast(`while you were away · +$${gain}`), 700); }
+  return true;
+}
+addEventListener('pagehide', save);
+document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
+
+// ---- drawing the game layer into the character grid
+function drawPlace(p) {
+  const [c, r] = cellOf(p.x, p.y), on = p.connected, col = p.col;
+  const fl = p.flick && on && (Math.sin(simT * 9 + p.id * 3) + Math.sin(simT * 23 + p.id)) > 1.45 ? 0.12 : 1;
+  const k = (on ? 1 : 0.3) * fl;
+  const pr = Math.max(2, Math.round(2.4 * THp / ch));
+  const txt = ' ' + p.name + ' ', w = txt.length + 2, left = c - (w >> 1), top = r - pr - 3;
+  const dimA = [col[0] * 0.25, col[1] * 0.25, col[2] * 0.25];
+  for (let j = 0; j < pr; j++) { put(left + 2, r - j, CH.bar, AL.pole); put(left + w - 3, r - j, CH.bar, AL.pole); }
+  for (let j = 0; j < w; j++) {
+    const edge = j === 0 || j === w - 1;
+    put(left + j, top, edge ? CH.dot : CH.dash, dimA, col, 0.9 * k);
+    put(left + j, top + 2, edge ? CH.apos : CH.dash, dimA, col, 0.9 * k);
+    put(left + j, top + 1, edge ? CH.bar : C(txt[j - 1]), dimA, col, (edge ? 1.0 : 2.2) * k);
+  }
+  poolInto(litA, p.x, p.y, 6.5, col, (on ? 1.0 : 0.25) * fl);
+  refl.push([c, r, col, (on ? 0.9 : 0.25) * fl]);
+  if (!on) {
+    if (Math.sin(simT * 3) > -0.3) { const msg = '[ no road ]'; for (let j = 0; j < msg.length; j++) put(c - (msg.length >> 1) + j, r + 2, C(msg[j]), [0.6, 0.65, 0.75]); }
+  } else for (let j = 0; j < Math.min(5, Math.floor(p.demand)); j++) put(left + w + 1 + j, top + 1, CH.dot, [0.7, 0.7, 0.7], col, 0.6);
+}
+function drawText(c0, r0, text, col, k) { for (let j = 0; j < text.length; j++) put(c0 + j, r0, C(text[j]), [col[0] * 0.3, col[1] * 0.3, col[2] * 0.3], col, k); }
+function drawGameLayer(dt) {
+  for (const p of places) drawPlace(p);
+  const pr = Math.max(2, Math.round(2.4 * THp / ch));
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i]; f.t += dt;
+    if (f.t > 1.6) { floaters.splice(i, 1); continue; }
+    const [c, r] = cellOf(f.x, f.y), a = 1 - f.t / 1.6;
+    drawText(c - (f.text.length >> 1), r - pr - 5 - Math.floor(f.t * 7), f.text, f.col, 3 * a);
+  }
+  // signs off screen get an arrow at the edge
+  const topY = 56, botY = H - 132, mL = 6, mR = W - 6;
+  for (const p of places) {
+    const [sx, sy] = w2s(p.x, p.y);
+    if (sx > mL && sx < mR && sy > topY && sy < botY) continue;
+    const blink = p.connected || Math.sin(simT * 4) > -0.2;
+    if (!blink) continue;
+    let text, c0;
+    const r0 = Math.floor(clamp(sy, topY, botY) / ch);
+    if (sx <= mL || sx >= mR) {
+      text = sx <= mL ? '< ' + p.name : p.name + ' >';
+      c0 = sx <= mL ? Math.floor(mL / cw) + 1 : Math.floor(mR / cw) - text.length - 1;
+    } else {
+      text = (sy <= topY ? '^ ' : 'v ') + p.name;
+      c0 = Math.floor(clamp(sx, 60, W - 60) / cw) - (text.length >> 1);
+    }
+    drawText(c0, r0, text, p.col, p.connected ? 0.9 : 1.6);
+  }
+  if (stroke) {
+    const tip = stroke.pts[stroke.pts.length - 1], [c, r] = cellOf(tip[0], tip[1]);
+    const cost = Math.ceil(plen(stroke.pts) * COST), txt = '-$' + cost;
+    drawText(c + 3, r - 3, txt, stroke.broke ? LC.red : [0.5, 0.9, 1], 1.6);
+    if (stroke.broke) drawText(c + 3, r - 2, 'out of cash', LC.red, 1.2);
   }
 }
 
@@ -694,6 +866,9 @@ function rebuildBase() {
       } else baseCh[i] = CH.sp, baseAlb[i * 3] = baseAlb[i * 3 + 1] = baseAlb[i * 3 + 2] = 0;
       continue;
     }
+    let lot = false;
+    for (const pl of places) if (Math.abs(pl.x - x) + Math.abs(pl.y - y) < 4.4) { lot = true; break; }
+    if (lot) { isRoad[i] = 1; setBase(i, h < 0.22 ? CH.dot : h < 0.28 ? CH.colon : CH.sp, AL.road); continue; }
     // ground: a dense field of grass blades that lean in patches
     const n = vnoise(x * 0.16, y * 0.16), dens = 0.3 + 0.55 * n;
     if (h < dens) {
@@ -788,11 +963,11 @@ const carSeen = new Map();
 function drawCar(c) {
   let hx = c.hx, hy = c.hy;
   if (c.rot) { const co = Math.cos(c.rot), si = Math.sin(c.rot), nx = hx * co - hy * si; hy = hx * si + hy * co; hx = nx; }
-  const fade = c.fade * (c.path.kind === 'lane' && c.path.to.deg < 2 ? clamp((c.path.len - c.s) / 3, 0, 1) : 1);
+  const fade = c.fade * (c.path.kind === 'lane' && (c.path.to.deg < 2 || (c.dest && c.dest.nodes.includes(c.path.to))) ? clamp((c.path.len - c.s) / 3, 0, 1) : 1);
   if (fade <= 0.02) return;
   const rxv = -hy, ryv = hx;
   const sxh = (hx - hy) * TWp / 2, syh = (hx + hy) * THp / 2, sn = Math.hypot(sxh, syh) || 1, tow = syh / sn;
-  const L = c.len, Wd = c.kind === 'bus' ? 1.0 : 0.85, st = 0.08;
+  const L = c.len, Wd = c.kind === 'bus' ? 0.95 : 0.8, st = 0.075;
   const roofUp = Math.max(1, Math.round(0.5 * THp / ch));
   const lo = [c.col[0] * 0.42 * fade, c.col[1] * 0.42 * fade, c.col[2] * 0.42 * fade];
   const hi = [c.col[0] * fade, c.col[1] * fade, c.col[2] * fade];
@@ -854,16 +1029,19 @@ function updateRain(dt) {
 }
 
 // ================================================================ frame
-let last = performance.now(), fpsS = 60, statT = 0, nextWave = 8;
-const statsEl = document.getElementById('stats');
+let last = performance.now(), fpsS = 60, statT = 0, nextWave = 8, saveT = 5;
+const statsEl = document.getElementById('stats'), moneyEl = document.getElementById('money'), hintEl = document.getElementById('hint');
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   fpsS += (1 / Math.max(dt, 1e-3) - fpsS) * 0.05;
   simT += dt;
 
   // ---- simulation
-  const target = Math.min(170, Math.round(totalLane / 15 * TRAFFIC[ti].k));
-  if (cars.length < target && rnd() < dt * 6) spawnCar(false);
+  updateDemand(dt);
+  nextPlace -= dt;
+  if (nextPlace <= 0) { nextPlace = rr(55, 100); if (places.filter(p => !p.connected).length < 2) spawnPlace(); }
+  if (toastT > 0) { toastT -= dt; if (toastT <= 0) toastEl.style.opacity = 0; }
+  saveT -= dt; if (saveT <= 0) { saveT = 5; save(); }
   nextWave -= dt;
   if (nextWave <= 0) { nextWave = rr(7, 14); const fast = cars.filter(c => c.v > 5 && c.path.kind === 'lane'); if (fast.length) pick(fast).brakeT = rr(0.8, 1.4); }
   updateCars(dt);
@@ -915,7 +1093,7 @@ function frame(now) {
       poolInto(litA, p[0], p[1], 4, [0.4, 0.8, 1], 0.5 * a);
     }
     const tip = stroke.pts[n - 1], [c, r] = cellOf(tip[0], tip[1]);
-    put(c, r, CH.plus, [1, 1, 1], [0.7, 0.95, 1], 2.2);
+    put(c, r, CH.plus, [1, 1, 1], stroke.broke ? LC.red : [0.7, 0.95, 1], 2.2);
   }
   for (const [c, r, col, I] of refl) if (I > 0.02) reflectInto(litA, c, r, col, I, false);
   // rain (lit by whatever light the cell already has)
@@ -925,6 +1103,7 @@ function frame(now) {
     put(Math.floor(d.c - k * slant), Math.floor(d.r) - k, k === 0 ? CH.bar : CH.apos, [AL.rain[0] * k2, AL.rain[1] * k2, AL.rain[2] * k2]);
   }
   for (const s of splashes) if (s.r < rows && s.c < cols && isRoad[s.r * cols + s.c]) put(s.c, s.r, s.t < 0.1 ? CH.dot : s.t < 0.2 ? CH.o : CH.deg, AL.splash);
+  drawGameLayer(dt);
 
   // ---- resolve colour per cell
   const cd = colorImg.data, gd = glowImg.data;
@@ -967,9 +1146,12 @@ function frame(now) {
   statT -= dt;
   if (statT <= 0) {
     statT = 0.5;
-    let rl = 0; for (const r of roads) rl += r.len;
-    const stopped = cars.filter(c => c.v < 0.5).length;
-    statsEl.textContent = `${cars.length} cars · ${stopped} waiting · ${(rl * 0.004).toFixed(1)} km`;
+    const tpm = pays.filter(p => p[0] > simT - 60).length;
+    moneyEl.textContent = '$' + Math.floor(money).toLocaleString();
+    statsEl.textContent = `${tpm} trips/min · ${cars.length} cars`;
+    const todo = places.find(p => !p.connected);
+    hintEl.textContent = mode !== 'draw' ? 'drag to pan · pinch or scroll to zoom'
+      : todo ? `connect ${todo.name} · drag a road between two signs` : 'drag to draw a road · two fingers to pan & zoom';
   }
   requestAnimationFrame(frame);
 }
@@ -989,7 +1171,9 @@ function startStroke(e) { const p = s2w(e.clientX, e.clientY); stroke = { pts: [
 function extendStroke(e) {
   const raw = s2w(e.clientX, e.clientY), l = stroke.pts[stroke.pts.length - 1];
   const p = [l[0] + (raw[0] - l[0]) * 0.5, l[1] + (raw[1] - l[1]) * 0.5];
-  if (Math.hypot(p[0] - l[0], p[1] - l[1]) > 0.45) { stroke.pts.push(p); stroke.t.push(simT); stroke.s = null; }
+  if (Math.hypot(p[0] - l[0], p[1] - l[1]) <= 0.45) return;
+  if ((plen(stroke.pts) + Math.hypot(p[0] - l[0], p[1] - l[1])) * COST > money) { stroke.broke = true; return; }
+  stroke.pts.push(p); stroke.t.push(simT); stroke.s = null;
 }
 view.addEventListener('contextmenu', e => e.preventDefault());
 view.addEventListener('pointerdown', e => {
@@ -1027,10 +1211,10 @@ const $ = id => document.getElementById(id);
 $('bMode').onclick = () => {
   mode = mode === 'draw' ? 'pan' : 'draw';
   $('bMode').textContent = mode; $('bMode').setAttribute('aria-pressed', String(mode === 'draw'));
-  $('hint').textContent = mode === 'draw' ? 'drag to draw a road · two fingers to pan & zoom' : 'drag to pan · pinch or scroll to zoom';
+  statT = 0;
 };
-$('bUndo').onclick = () => { if (!roads.length) return; roads.pop(); rebuildNetwork(); remapCars(); };
-$('bClear').onclick = () => { roads = []; cars = []; incidents.length = 0; rebuildNetwork(); };
+$('bUndo').onclick = () => { if (!roads.length) return; const r = roads.pop(); money += r.cost || 0; rebuildNetwork(); remapCars(); save(); };
+$('bClear').onclick = () => { for (const r of roads) money += r.cost || 0; roads = []; cars = []; incidents.length = 0; rebuildNetwork(); save(); };
 $('bRain').onclick = () => { wi = (wi + 1) % WEATHER.length; $('vRain').textContent = WEATHER[wi].name; setRain(); };
 $('bTraffic').onclick = () => { ti = (ti + 1) % TRAFFIC.length; $('vTraffic').textContent = TRAFFIC[ti].name; };
 $('bCrash').onclick = triggerCrash;
@@ -1041,15 +1225,25 @@ F = clamp(Math.round(W / 65), 5, 8);
 resizeCells();
 centerOn(0, 0);
 setRain();
-{
+if (!load()) {
   const S = (u, v) => s2w(u * W, v * H);
-  const line = (n, f) => { const o = []; for (let k = 0; k <= n; k++) { const t = k / n; o.push(f(t)); } return o; };
-  commitStroke(line(40, t => S(-0.5 + 2 * t, 0.3 - 0.04 * t + 0.03 * Math.sin(t * 7))), true);
-  commitStroke(line(40, t => S(-0.5 + 2 * t, 0.66 + 0.06 * t)), true);
-  commitStroke(line(40, t => S(0.38 + 0.07 * Math.sin(t * 5), -0.3 + 1.6 * t)), true);
-  commitStroke(line(24, t => S(0.8 + 0.18 * Math.sin(t * Math.PI), 0.285 + 0.41 * t)), true);
-  for (let k = 0; k < 900; k++) { simT += 1 / 30; const tg = Math.round(totalLane / 15); if (cars.length < tg && rnd() < 0.3) spawnCar(k < 200); updateCars(1 / 30); }
+  addPlace('MOTEL', ...S(0.24, 0.3), 0, false);
+  addPlace('DINER', ...S(0.76, 0.45), 1, true);
+  addPlace('GAS 24', ...S(0.32, 0.72), 2, false);
+  const line = [];
+  for (let k = 0; k <= 30; k++) { const t = k / 30; line.push(S(0.24 + 0.52 * t, 0.3 + 0.15 * t - 0.1 * Math.sin(t * Math.PI))); }
+  commitStroke(line, true);
+  for (let k = 0; k < 450; k++) { simT += 1 / 30; updateDemand(1 / 30); updateCars(1 / 30); }
+  money = 150; tripsTotal = 0; pays.length = 0; floaters.length = 0;
+  setTimeout(() => toast('connect GAS 24 · drag a road from a sign to another sign'), 900);
+} else {
+  let cx = 0, cy = 0; for (const p of places) { cx += p.x; cy += p.y; }
+  centerOn(cx / places.length, cy / places.length);
+  const m0 = money, t0 = tripsTotal;
+  for (let k = 0; k < 300; k++) { simT += 1 / 30; updateDemand(1 / 30); updateCars(1 / 30); }
+  money = m0; tripsTotal = t0; pays.length = 0; floaters.length = 0;
 }
+baseDirty = true;
 if (document.fonts && document.fonts.load) document.fonts.load(`500 12px "JetBrains Mono"`).then(() => { atlas.clear(); prevCh.fill(-1); }).catch(() => {});
 requestAnimationFrame(t => { last = t; frame(t); });
 })();
