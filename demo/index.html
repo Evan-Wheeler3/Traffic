@@ -115,8 +115,8 @@ const C = s => s.codePointAt(0);
 
 // albedo (how much light a character reflects) and light colours, linear 0..1
 const AL = {
-  edge: [1.1, 1.12, 1.2], road: [0.34, 0.37, 0.46], puddle: [0.48, 0.62, 0.9], center: [1.0, 0.78, 0.3],
-  grid: [0.30, 0.34, 0.46], ground: [0.24, 0.58, 0.36], pole: [0.40, 0.42, 0.5], rain: [0.55, 0.62, 0.86], splash: [0.75, 0.8, 0.95]
+  edge: [1.6, 1.65, 1.85], road: [0.44, 0.47, 0.58], puddle: [0.48, 0.62, 0.9], center: [1.7, 1.25, 0.42],
+  grid: [0.30, 0.34, 0.46], ground: [0.15, 0.38, 0.24], pole: [0.55, 0.58, 0.68], rain: [0.55, 0.62, 0.86], splash: [0.75, 0.8, 0.95]
 };
 const LC = {
   sodium: [1.0, 0.52, 0.18], head: [1.0, 0.93, 0.78], tail: [1.0, 0.1, 0.05], red: [1.0, 0.12, 0.1], amber: [1.0, 0.62, 0.1],
@@ -939,9 +939,9 @@ function drawBuilding(p) {
   // windows are laid out on the character grid itself: regular rows per floor, blocks of 2 cells
   const face = (side, u, hpx, len, c, r) => {
     const shade = side ? 0.6 : 1;
-    const edgeA = [0.9 * shade, 0.95 * shade, 1.1 * shade];
+    const edgeA = [1.3 * shade, 1.35 * shade, 1.55 * shade];
     if (hpx > Hp - ev) return put(c, r, CH.dash, edgeA);
-    if (len - u < eu) return put(c, r, CH.bar, [1.05, 1.1, 1.25]);
+    if (len - u < eu) return put(c, r, CH.bar, [1.5, 1.55, 1.75]);
     if (u < eu) return put(c, r, CH.bar, edgeA);
     if (hpx < ev * 0.8) return put(c, r, CH.under, edgeA);
     const rv = Math.floor(hpx / ch), cu = Math.floor(u * hw / cw), fl = Math.floor(hpx / lvl);
@@ -952,14 +952,14 @@ function drawBuilding(p) {
       const wc = hh_ < litP * 0.25 ? [0.55, 0.75, 1] : [1, 0.78, 0.42];
       return put(c, r, CH.hash, lit ? [0.7 * shade, 0.6 * shade, 0.4 * shade] : [0.16, 0.17, 0.22], lit ? wc : null, 0.9 * shade);
     }
-    return put(c, r, rv % 2 ? CH.sp : (side ? CH.dot : CH.colon), [0.34 * shade, 0.36 * shade, 0.46 * shade]);
+    return put(c, r, rv % 2 ? CH.sp : (side ? CH.dot : CH.colon), [0.5 * shade, 0.53 * shade, 0.66 * shade]);
   };
   for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
     const sx = (c + 0.5) * cw, sy = (r + 0.5) * ch;
     const rw = s2w(sx, sy + Hp);
     if (rw[0] >= B.x0 && rw[0] <= B.x1 && rw[1] >= B.y0 && rw[1] <= B.y1) {
       const ed = Math.min(rw[0] - B.x0, B.x1 - rw[0], rw[1] - B.y0, B.y1 - rw[1]);
-      if (ed < eu * 1.1) put(c, r, CH.dash, [0.85, 0.9, 1.05]);
+      if (ed < eu * 1.1) put(c, r, CH.dash, [1.25, 1.3, 1.5]);
       else { const hh_ = hash(Math.floor(rw[0] * 3), Math.floor(rw[1] * 3)); put(c, r, hh_ < 0.05 ? C('[') : hh_ < 0.1 ? C(']') : hh_ < 0.4 ? CH.dot : CH.sp, [0.3, 0.32, 0.4]); }
       continue;
     }
@@ -1399,7 +1399,7 @@ function drawCar(c) {
     if (lenCells < 2.5) {
       const m = cellOfZ(cz, c.x, c.y), toward = tow > 0.1;
       const col = lit_ ? bar : haz ? LC.amber : toward ? LC.head : LC.tail;
-      const k = (lit_ ? 2.4 : haz ? 1.6 : toward ? 0.8 + tow : c.brake ? 1.7 : 0.75) * fade;
+      const k = (lit_ ? 3 : haz ? 2.2 : toward ? 1.4 + tow : c.brake ? 2.2 : 1.2) * fade;
       put(m[0], m[1], !toward && c.brake && !lit_ ? CH.O : CH.o, [col[0] * 0.6, col[1] * 0.6, col[2] * 0.6], col, k);
       refl.push([m[0], m[1], col, 0.5 * k]);
     } else {
@@ -1408,8 +1408,8 @@ function drawCar(c) {
         const q2 = cellOfZ(cz, c.x + hx * t, c.y + hy * t), l = cells[cells.length - 1];
         if (!l || l[0] !== q2[0] || l[1] !== q2[1]) cells.push(q2);
       }
-      const bc = bodyChar(sxh, syh), body = [c.col[0] * fade, c.col[1] * fade, c.col[2] * fade];
-      for (let k = 1; k < cells.length - 1; k++) put(cells[k][0], cells[k][1], c.kind === 'bus' ? CH.hash : bc, body, c.col, 0.1 * fade);
+      const bc = bodyChar(sxh, syh), body = [c.col[0] * 1.4 * fade, c.col[1] * 1.4 * fade, c.col[2] * 1.4 * fade];
+      for (let k = 1; k < cells.length - 1; k++) put(cells[k][0], cells[k][1], c.kind === 'bus' ? CH.hash : bc, body, c.col, 0.3 * fade);
       const hcl = cells[cells.length - 1], tcl = cells[0];
       put(hcl[0], hcl[1], CH.o, [0.9, 0.9, 0.85], haz ? LC.amber : LC.head, (haz ? 1.4 : 0.6 + 1.1 * Math.max(0, tow)) * fade);
       if (cells.length > 1) put(tcl[0], tcl[1], c.brake ? CH.O : CH.o, [0.8, 0.2, 0.15], haz ? LC.amber : LC.tail, (haz ? 1.4 : c.brake ? 1.6 : 0.65) * fade);
@@ -1426,8 +1426,8 @@ function drawCar(c) {
   }
   const L = c.len, Wd = c.kind === 'bus' ? 0.95 : 0.8, st = 0.075;
   const roofUp = Math.max(1, Math.round(0.5 * THp / ch));
-  const lo = [c.col[0] * 0.42 * fade, c.col[1] * 0.42 * fade, c.col[2] * 0.42 * fade];
-  const hi = [c.col[0] * fade, c.col[1] * fade, c.col[2] * fade];
+  const lo = [c.col[0] * 0.65 * fade, c.col[1] * 0.65 * fade, c.col[2] * 0.65 * fade];
+  const hi = [c.col[0] * 1.4 * fade, c.col[1] * 1.4 * fade, c.col[2] * 1.4 * fade];
   const glass = [0.3 * fade, 0.42 * fade, 0.62 * fade];
   carSeen.clear();
   for (let u = -L / 2; u <= L / 2 + 1e-6; u += st) for (let v = -Wd / 2; v <= Wd / 2 + 1e-6; v += st) {
@@ -1435,7 +1435,7 @@ function drawCar(c) {
     if (!carSeen.has(k)) carSeen.set(k, [cc, rr_, u, v]);
   }
   // lower body
-  for (const [cc, rr_] of carSeen.values()) put(cc, rr_, CH.hash, lo, c.col, 0.05 * fade);
+  for (const [cc, rr_] of carSeen.values()) put(cc, rr_, CH.hash, lo, c.col, 0.16 * fade);
   // roof / cabin, lifted a little so the car has height
   const r0 = c.kind === 'bus' ? -L * 0.47 : -L * 0.3, r1 = c.kind === 'bus' ? L * 0.47 : L * 0.22, rv = Wd * 0.38;
   const lit_ = (c.cop && c.siren) || c.amber;
@@ -1445,7 +1445,7 @@ function drawCar(c) {
     const front = u > r1 - L * 0.16, back = u < r0 + L * 0.1;
     if (c.kind === 'bus') { put(cc, rr_ - roofUp, CH.eq, [0.9 * fade, 0.75 * fade, 0.45 * fade], [1, 0.75, 0.4], 0.32 * fade); continue; }
     if (lit_ && Math.abs(u + L * 0.04) < 0.13) { put(cc, rr_ - roofUp, CH.eq, [0.6, 0.6, 0.7], bar, 2.2 * fade); continue; }
-    put(cc, rr_ - roofUp, front || back ? CH.eq : CH.hash, front || back ? glass : hi, c.col, 0.08 * fade);
+    put(cc, rr_ - roofUp, front || back ? CH.eq : CH.hash, front || back ? glass : hi, c.col, 0.2 * fade);
   }
   if (c.kind === 'taxi') { const [cc, rr_] = cellOfZ(cz, c.x, c.y); put(cc, rr_ - roofUp - 1, CH.caret, [1, 0.85, 0.4], [1, 0.8, 0.3], 0.9 * fade); }
   // lamps on the corners
@@ -1482,7 +1482,7 @@ function rainSprite(len, lvl) {
   g = mk(w, chD * len);
   const x = g.getContext('2d');
   x.font = `500 ${Math.round(F * DPR)}px ${FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle';
-  const b = 0.5 + lvl / 7 * 1.2, hx = w - cwD / 2 - 1;
+  const b = 0.3 + lvl / 7 * 1.45, hx = w - cwD / 2 - 1;
   for (let k = 0; k < len; k++) {
     const k2 = (1 - k / len) * b;
     x.fillStyle = `rgb(${Math.min(255, AL.rain[0] * 255 * k2) | 0},${Math.min(255, AL.rain[1] * 255 * k2) | 0},${Math.min(255, AL.rain[2] * 255 * k2) | 0})`;
@@ -1492,7 +1492,7 @@ function rainSprite(len, lvl) {
   return g;
 }
 function drawRainSprites() {
-  ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = clamp(zoomTW / 40, 0.35, 1);
   for (const d of drops) {
     const c = Math.floor(d.c), r = Math.floor(d.r);
     let lvl = 1;
@@ -1571,7 +1571,7 @@ function frame(now) {
 
   // ---- per-frame cells
   chA.set(baseCh); albA.set(baseAlb); emA.set(baseEm);
-  const ak = WEATHER[wi].amb, ar = 0.22 * ak + flash * 0.9, ag = 0.27 * ak + flash * 0.95, ab = 0.4 * ak + flash;
+  const ak = WEATHER[wi].amb, ar = 0.25 * ak + flash * 0.9, ag = 0.29 * ak + flash * 0.95, ab = 0.42 * ak + flash;
   for (let i = 0; i < NC; i++) { litA[i * 3] = ar + baseLit[i * 3]; litA[i * 3 + 1] = ag + baseLit[i * 3 + 1]; litA[i * 3 + 2] = ab + baseLit[i * 3 + 2]; }
   refl.length = 0;
   // signals
@@ -1628,7 +1628,7 @@ function frame(now) {
   for (let i = 0; i < NC; i++) {
     const j = i * 3, o = i * 4;
     const r = albA[j] * litA[j] + emA[j], g = albA[j + 1] * litA[j + 1] + emA[j + 1], b = albA[j + 2] * litA[j + 2] + emA[j + 2];
-    cd[o] = 255 * (1 - Math.exp(-1.9 * r)); cd[o + 1] = 255 * (1 - Math.exp(-1.9 * g)); cd[o + 2] = 255 * (1 - Math.exp(-1.9 * b)); cd[o + 3] = 255;
+    cd[o] = 255 * (1 - Math.exp(-2.3 * r)); cd[o + 1] = 255 * (1 - Math.exp(-2.3 * g)); cd[o + 2] = 255 * (1 - Math.exp(-2.3 * b)); cd[o + 3] = 255;
     gd[o] = Math.min(255, (emA[j] * 0.55 + Math.max(0, r - 0.85) * 0.35) * 255);
     gd[o + 1] = Math.min(255, (emA[j + 1] * 0.55 + Math.max(0, g - 0.85) * 0.35) * 255);
     gd[o + 2] = Math.min(255, (emA[j + 2] * 0.55 + Math.max(0, b - 0.85) * 0.35) * 255);
@@ -1657,7 +1657,7 @@ function frame(now) {
   g3X.clearRect(0, 0, g3C.width, g3C.height); g3X.drawImage(g2C, 0, 0, g3C.width, g3C.height);
   ctx.globalCompositeOperation = 'lighter';
   ctx.globalAlpha = 1; ctx.drawImage(g2C, 0, 0, cols * cwD, rows * chD);
-  ctx.globalAlpha = 0.8; ctx.drawImage(g3C, 0, 0, cols * cwD, rows * chD);
+  ctx.globalAlpha = 0.45; ctx.drawImage(g3C, 0, 0, cols * cwD, rows * chD);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   const fo = flash > 0.02 ? (flash * 0.22).toFixed(3) : '0';
   if (fo !== flashEl.style.opacity) flashEl.style.opacity = fo;
